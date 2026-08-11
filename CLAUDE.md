@@ -43,7 +43,7 @@ AUDIO_I2S: MCLK 16, WS 45, BCLK 9, DIN 10, DOUT 8, PA 46
 AUDIO_CODEC_I2C:   SDA 15, SCL 14
 DISPLAY: CS 5, MOSI 7, CLK 6, DC 4, RST 38, BACKLIGHT 40
 TOUCH:   RST 39, INT 13
-microSD (xiaozhi KULLANMIYOR, pinler boş): D0 3, CMD 1, CLK 2
+microSD: D0 3, CMD 1, CLK 2  (SDMMC 1-bit, CD/WP pini yok)
 ```
 
 ### Partition tablosu (`partitions/v2/16m.csv`)
@@ -197,7 +197,7 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 | **Dokunmatik** | Upstream'de hiçbir tıklanabilir widget yok. Bu fork'ta `settings_panel_display.h` ile kullanılıyor (bkz. §3). Kaydırma olayı parmağın altındaki nesneye gider; `container_`/`emoji_box_` üzerinde `EVENT_BUBBLE` ile ekrana çıkarılıyor ve scroll'un hareketi yutmaması için o ikisinde `SCROLLABLE` kapatılıyor. |
 | **`-Werror` enum** | `LV_PART_x \| LV_STATE_x` doğrudan OR'lanınca `-Werror=deprecated-enum-enum-conversion` derlemeyi durduruyor. `lv_style_selector_t`'ye cast et. Bir CI turu bu yüzden yandı. |
 | **Kapalı LVGL widget'ları** | `sdkconfig.defaults`'ta flash tasarrufu için `=n`: **tileview, tabview, keyboard, list, menu, msgbox, spinner, chart, calendar, span, spinbox, led, win, animimg**. Kullanmaya kalkarsan "was not declared in this scope" alırsın — bir CI turu tileview yüzünden yandı. Sayfalama `lv_obj` + `lv_obj_set_scroll_snap_x` + `SCROLL_ONE` ile kendimiz yapıldı. `slider`, `switch`, `button`, `buttonmatrix` **açık**. Paylaşılan sdkconfig'i değiştirmek tüm board'ları etkiler, son çare olsun. |
-| **microSD** | Firmware **hiç kullanmıyor**. Board dosyasında 0 referans; `main/CMakeLists.txt` SDMMC sürücülerini sadece ESP32-P4 EV board için linkliyor. Assets flash partition'ında, müzik forkları HTTP stream ediyor. Upstream issue #1053 açık. |
+| **microSD** | ✅ **Bu fork'ta çalışıyor** — 64 GB FAT32 kart cihazda doğrulandı (`59.5 GB OK`). Pinler stok `config.h`'da **yoktu**, Waveshare BSP bileşeninden alındı. `main/CMakeLists.txt`'te SDMMC bağımlılığı bu board için de eklendi. **Ama hâlâ tüketicisi yok** — sadece `/sdcard` mount ediliyor. `format_if_mount_failed=false`, asla formatlama. Upstream issue #1053 hâlâ açık. |
 | **Wake word Türkçe** | **Mümkün değil.** ESP-SR WakeNet/MultiNet sadece İngilizce + Mandarin. `--list-wake-words` çıktısında Türkçe yok. Çözüm: İngilizce wake word veya dokunmatik/buton ile push-to-talk. |
 | **Arayüz dili** | `LANGUAGE_TR_TR` var (38 dilden biri), `--language tr-TR` çalışıyor. Ama **diyalog** dili sunucu tarafında belirleniyor. |
 | **Sunucu** | `wifi/ota_url` NVS'te **boş** → `CONFIG_OTA_URL` = `https://api.tenclass.net/xiaozhi/ota/` (Çin). Değiştirmek için: WiFi portal `192.168.4.1` → Advanced → `ota_url`. `wifi_board.cc:59` `show_ota_config = true` (doğrulandı). Derleme gerekmez. |
@@ -219,10 +219,14 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 4. **Kullanılmayan çipler** — kartta **QMI8658 IMU** ve **PCF85063 RTC** var, `main/` ağacında
    sürücüleri **yok** (tek referans başka bir board'un `pin_config.h`'si). Sıfırdan I2C sürücüsü
    yazmak gerekir. IMU > RTC: eline alınca uyandırma, ters çevirince sessize alma.
-5. **microSD** — yuva var, firmware'de sıfır kod. Mount etmek kolay (örnek:
-   `nologo/xingzhi-abs-2.0`) ama **tüketici yok**: `AudioService::PlaySound` sadece bellekteki
-   Ogg/Opus alıyor, akış yolu yok. Asset'leri SD'den okumak 8 MB sınırını kaldırır ama yükleyiciyi
-   değiştirmek gerekir. En kısa faydalı yol: mount + MCP dosya aracı.
+5. **microSD** — ✅ mount çalışıyor. Sıradaki soru **ne için kullanılacağı**:
+   - *Görsel/animasyon SD'den:* LVGL'in dosya sistemi sürücüleri (`LV_USE_FS_POSIX` vb.) sdkconfig'de
+     **kapalı**, ama `lv_fs_drv_register()` çekirdek API — sürücüyü kendi header'ımızda kayıt
+     edebiliriz, sdkconfig'e dokunmadan. `LV_USE_LODEPNG=y` olduğu için PNG çözülüyor.
+     Bu, flash'taki 8 MB asset sınırını atlatmanın en temiz yolu.
+   - *Yerel ses:* `AudioService::PlaySound` sadece bellekteki Ogg/Opus alıyor, akış yolu yok.
+     Kısa bildirim sesleri olur, şarkı için streaming decoder yazmak gerekir.
+   - *MCP dosya aracı:* asistanın SD'ye not yazıp okuması — kalıcı hafıza.
 6. **Kendi sunucusu** — `xinnan-tech/xiaozhi-esp32-server`. Hedef donanım: **Raspberry Pi 5 8 GB**
    (Hetzner CPX22 kullanıcının üretim sunucusu, oraya kurulmayacak). Kaynaktan doğrulandı:
    - LLM: **Gemini yerleşik** (`llm/gemini/gemini.py`). **Claude için sağlayıcı yok** — genel
@@ -247,7 +251,13 @@ Canlı veri = MCP aracı meselesi, model meselesi değil.
 1. **Kaynağı oku, varsayma.** Bu depo hızlı değişiyor. Bir API veya sabit hakkında emin değilsen `main/` altında grep'le. Yanlış imza = 6 dakikalık başarısız CI turu.
 2. **Sadece `pwr-button` dalında çalış.** `main`'i upstream senkronu için temiz bırak.
 3. **Board dosyasına dokunurken minimal ol.** Upstream `git rebase` ile güncellenecek; ne kadar az satır değişirse çakışma o kadar az.
-4. **Cihaza erişimin yok.** Flash ve test kullanıcıda. "Test ettim" deme, "flash'layıp şunu dener misin" de.
+4. **Flash'ı ajan yapıyor, testi kullanıcı.** Kullanıcı bu işi devretti (11 Ağu 2026).
+   `C:\xiaozhi` klasöründe `esptool.exe`, `nvs-only.bin`, `stok-turkce.bin` ve geri dönüş için
+   `onceki.bin` var; cihaz **COM8**'de. Akış: `gh run download <id>` → `merged-binary.bin`'i
+   `onceki.bin` olarak yedekle → `write-flash 0x0` → `write-flash 0x9000 nvs-only.bin`.
+   `flash.ps1` aynı işi yapar ama `Read-Host` ile onay sorduğu için ajan oturumunda takılır,
+   iki esptool komutunu ayrı çalıştır. **Cihazda test etmek yine kullanıcıda** — ekranı göremezsin,
+   "çalışıyor" deme, "şunu dener misin" de.
 5. **Sırlar depoya girmez.** Bu fork **public**. Cihazın MAC'i, `board/uuid`'si, WiFi SSID/şifresi, MQTT credential'ları hiçbir commit'e girmemeli. Yerel notlar için `cihaz-notlari.local.md` kullan — `.gitignore`'da.
 6. **Değişiklik → push → kullanıcıya haber.** Push otomatik derleme tetikler; kullanıcıya artifact'ın hazır olacağını ve flash sırasını (NVS dahil) hatırlat.
 7. **Riskli bir şey önermeden önce geri dönüş yolunu söyle.** Kullanıcının `kritik-yedek.bin` (64KB) ve `nvs-only.bin` (16KB) yedekleri var; tam 16MB yedeği yok.
