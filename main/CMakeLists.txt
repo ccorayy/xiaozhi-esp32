@@ -384,7 +384,9 @@ elseif(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_83)
     set(BOARD_DIR "waveshare/esp32-s3-touch-lcd-1.83")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
     set(BUILTIN_ICON_FONT font_material_symbols_16_4)
-    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+    # 64 -> 128: 240x284 ekranda 64 px yuz kucuk kaliyordu. Assets bolumu 8 MB,
+    # 21 gorselin buyumesi sorun degil.
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
 elseif(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_RGB_MATRIX)
     set(BOARD_DIR "waveshare/esp32-s3-rgb-matrix")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_14_1)
