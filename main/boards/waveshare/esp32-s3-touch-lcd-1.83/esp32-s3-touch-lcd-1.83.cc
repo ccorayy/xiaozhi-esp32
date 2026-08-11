@@ -1,5 +1,6 @@
 #include "wifi_board.h"
 #include "display/lcd_display.h"
+#include "settings_panel_display.h"
 #include "codecs/box_audio_codec.h"
 #include "application.h"
 #include "button.h"
@@ -195,8 +196,15 @@ private:
         esp_lcd_panel_invert_color(panel, true);
         // esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
         esp_lcd_panel_disp_on_off(panel, true);
-        display_ = new SpiLcdDisplay(panel_io, panel,
+        auto settings_display = new SettingsPanelDisplay(panel_io, panel,
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        settings_display->SetOnWifiConfigRequest([this]() { EnterWifiConfigMode(); });
+        settings_display->SetOnUserActivity([this]() {
+            if (power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
+        });
+        display_ = settings_display;
     }
 
     void InitializeTouch() {
