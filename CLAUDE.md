@@ -80,6 +80,31 @@ constructor init listesine `pwr_button_(PWR_BUTTON_GPIO)`, `InitializeButtons()`
 **Buton polaritesi aktif-düşük** (`Button` varsayılanı) — cihazda doğrulandı, çalışıyor.
 Değiştirme.
 
+### Dokunmatik arayüz — `settings_panel_display.h` ✅ panel cihazda test edildi
+
+Board dizininde yeni, **header-only** dosya: `SettingsPanelDisplay : SpiLcdDisplay`.
+Board `.cc`'de sadece iki yer değişti (include + display nesnesinin oluşturulduğu blok).
+
+| Hareket | Sonuç |
+|---|---|
+| Ekrana dokunma | `ToggleChatState()` — Türkçe wake word imkânsız olduğu için asıl kullanım yolu |
+| Aşağı kaydırma | Panel açılır (yedek: üst 28 px'lik görünmez şeride dokunma) |
+| Yukarı kaydırma | Panel kapanır |
+| Sağa/sola kaydırma | Sayfalar: Ayarlar / Bilgi / Kısayollar (`lv_tileview`) |
+
+Tasarım kararları — bozmadan önce sebebini oku:
+
+- Panel **`lv_layer_top()`** üzerinde. Upstream'in `SetupUI()`/`SetTheme()` fonksiyonları sadece
+  `lv_screen_active()` çocuklarına dokunuyor, böylece çakışmıyoruz. Bedeli: yazı tipi/rengi
+  mirasla gelmiyor, `StylePanel()` içinde elle veriliyor.
+- **Ses** sadece parmak kalkınca uygulanıyor — `SetOutputVolume` her çağrıda NVS'e yazıyor.
+- **Parlaklık** sürüklerken `permanent=false`, bırakınca `true`. Alt sınır 5 (0 = ekran kilidi).
+- **`SetTheme` `Application::Schedule` ile** çağrılıyor; LVGL görevinden çağırınca kilit riski var.
+- Kaydırma da `LV_EVENT_CLICKED` üretebiliyor → `gesture_handled_` bayrağı, paneli açan
+  kaydırmanın aynı anda sohbeti başlatmasını engelliyor.
+- Ust bar `pad_left/right` 8 → **20**, `pad_top` 4 → **10**: yuvarlak köşeler wifi/pil ikonlarını
+  kırpıyordu. Cihazda doğrulandı, düzeldi.
+
 ---
 
 ## 4. Derleme — GitHub Actions
@@ -152,6 +177,11 @@ Kod yazarken bunları varsayma, aşağıdakiler kaynaktan teyit edildi:
 | `LcdDisplay` / `SpiLcdDisplay` — `SetupUI()` override edilebilir | `main/display/lcd_display.h:14,51,60` |
 | `McpServer::AddTool(name, desc, PropertyList, cb)` | `main/mcp_server.h` |
 | `Lang::Strings::VOLUME / MUTED / MAX_VOLUME` | `main/assets/locales/tr-TR/language.json` |
+| `Application::Schedule(std::function<void()>&&)` — ana görevde çalıştırır | `main/application.h:80` |
+| `Application::ToggleChatState()` — sadece event biti set eder, her görevden güvenli | `main/application.cc:700` |
+| `WifiBoard::EnterWifiConfigMode()` — NVS'teki WiFi'ı **silmez**, portalı açar | `main/boards/common/wifi_board.cc:195` |
+| `WifiManager::IsConnected/GetSsid/GetIpAddress/GetRssi` — **tarama API'si yok** | `<wifi_manager.h>` (78/esp-wifi-connect) |
+| `SsidManager::AddSsid/RemoveSsid/SetDefaultSsid/GetSsidList` — çoklu ağ, NVS'i kendi yazar | `<ssid_manager.h>` (aynı bileşen) |
 
 Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Maksimum ses".
 **Parlaklık için hazır string yok**, literal kullanılıyor.
@@ -164,7 +194,8 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 
 | Konu | Gerçek |
 |---|---|
-| **Dokunmatik** | Donanım LVGL'e bağlı (`lvgl_port_add_touch`) ama **hiçbir tıklanabilir widget yok**. Tüm `main/` ağacında tek `lv_obj_add_event_cb` var, o da `LV_EVENT_DELETE`. Ekrana dokunmak hiçbir şey yapmıyor. |
+| **Dokunmatik** | Upstream'de hiçbir tıklanabilir widget yok. Bu fork'ta `settings_panel_display.h` ile kullanılıyor (bkz. §3). Kaydırma olayı parmağın altındaki nesneye gider; `container_`/`emoji_box_` üzerinde `EVENT_BUBBLE` ile ekrana çıkarılıyor ve scroll'un hareketi yutmaması için o ikisinde `SCROLLABLE` kapatılıyor. |
+| **`-Werror` enum** | `LV_PART_x \| LV_STATE_x` doğrudan OR'lanınca `-Werror=deprecated-enum-enum-conversion` derlemeyi durduruyor. `lv_style_selector_t`'ye cast et. Bir CI turu bu yüzden yandı. |
 | **microSD** | Firmware **hiç kullanmıyor**. Board dosyasında 0 referans; `main/CMakeLists.txt` SDMMC sürücülerini sadece ESP32-P4 EV board için linkliyor. Assets flash partition'ında, müzik forkları HTTP stream ediyor. Upstream issue #1053 açık. |
 | **Wake word Türkçe** | **Mümkün değil.** ESP-SR WakeNet/MultiNet sadece İngilizce + Mandarin. `--list-wake-words` çıktısında Türkçe yok. Çözüm: İngilizce wake word veya dokunmatik/buton ile push-to-talk. |
 | **Arayüz dili** | `LANGUAGE_TR_TR` var (38 dilden biri), `--language tr-TR` çalışıyor. Ama **diyalog** dili sunucu tarafında belirleniyor. |
@@ -176,11 +207,36 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 
 ## 8. Yol haritası (kullanıcının ilgilendiği sıra)
 
-1. **Tam LVGL ayar paneli** — ekranı kaydırınca açılan panel: ses slider, parlaklık slider, tema anahtarı, WiFi sıfırlama butonu.
-   Yaklaşım: `SpiLcdDisplay` alt sınıfı + `SetupUI()` override, board'a özel bir header'da tut ki upstream güncellemelerinde çakışmasın. Backend hazır — PWR buton yamasındaki aynı çağrılar.
-2. **Özel emoji/yüz seti** — `78/xiaozhi-assets-generator` (tarayıcıda çalışır), 21 ifade, 240×284. OTA ile iner, flash gerekmez, kod değişikliği yok.
-3. **MCP endpoint** — konsoldaki `wss://api.xiaozhi.me/mcp/?token=…` ile cihaza iş yaptırmak. Başlangıç: `78/mcp-calculator`. Çoklu server için `shenjingnan/xiaozhi-client` agregatörü (tek endpoint tek bağlantı kabul ediyor).
-4. **Kendi sunucusu** — `xinnan-tech/xiaozhi-esp32-server`, Türkçe için `GroqASR (whisper-large-v3-turbo)` + `EdgeTTS tr-TR-EmelNeural/AhmetNeural`. ⚠️ Varsayılan ASR (FunASR/SenseVoice) **Türkçe bilmiyor**, ilk iş onu değiştir.
+1. ~~**Tam LVGL ayar paneli**~~ ✅ **bitti** — bkz. §3.
+2. **Panele WiFi sayfası** — sıradaki iş. İki parça: (a) kayıtlı ağ listesi, varsayılan seç/sil —
+   `SsidManager` ile kolay, klavye gerekmiyor; (b) yeni ağ eklemek için `lv_keyboard` ile şifre
+   girişi — 240 px'de tuş başına 24 px, eziyetli ama yapılabilir.
+   ⚠️ Ağ **taraması** için bileşende public API yok, `esp_wifi_scan_start()` doğrudan
+   çağrılacak; bileşen de arka planda kendi taramasını yapıyor, çakışma hatasını yakala.
+3. **Özel emoji/yüz seti** — `78/xiaozhi-assets-generator` (tarayıcıda çalışır), 21 ifade, 240×284. OTA ile iner, flash gerekmez, kod değişikliği yok.
+4. **Kullanılmayan çipler** — kartta **QMI8658 IMU** ve **PCF85063 RTC** var, `main/` ağacında
+   sürücüleri **yok** (tek referans başka bir board'un `pin_config.h`'si). Sıfırdan I2C sürücüsü
+   yazmak gerekir. IMU > RTC: eline alınca uyandırma, ters çevirince sessize alma.
+5. **microSD** — yuva var, firmware'de sıfır kod. Mount etmek kolay (örnek:
+   `nologo/xingzhi-abs-2.0`) ama **tüketici yok**: `AudioService::PlaySound` sadece bellekteki
+   Ogg/Opus alıyor, akış yolu yok. Asset'leri SD'den okumak 8 MB sınırını kaldırır ama yükleyiciyi
+   değiştirmek gerekir. En kısa faydalı yol: mount + MCP dosya aracı.
+6. **Kendi sunucusu** — `xinnan-tech/xiaozhi-esp32-server`. Hedef donanım: **Raspberry Pi 5 8 GB**
+   (Hetzner CPX22 kullanıcının üretim sunucusu, oraya kurulmayacak). Kaynaktan doğrulandı:
+   - LLM: **Gemini yerleşik** (`llm/gemini/gemini.py`). **Claude için sağlayıcı yok** — genel
+     `llm/openai/openai.py` `base_url` aldığı için OpenAI-uyumlu uç üzerinden denenebilir.
+   - ASR: "GroqASR" diye sağlayıcı yok. `asr/openai.py` `base_url`+`api_key`+`model_name` alıyor →
+     Groq'un OpenAI-uyumlu ucuna `whisper-large-v3-turbo` ile yönlendirilir. Türkçe çözümü bu.
+   - TTS: `tts/edge.py` var, EdgeTTS ücretsiz, `tr-TR-EmelNeural/AhmetNeural`.
+   - MCP sunucunun içinde (`server_mcp`, `mcp_endpoint`) → canlı veri araçları oraya bağlanır.
+   - Minimal kurulum: tek konteyner, port 8000 (ws) + 8003 (http/OTA), API tabanlı sağlayıcılarla
+     ~2 GB. Yerel model mount'unu (`SenseVoiceSmall`, ~1 GB) atla. Tam modül web konsol getirir
+     ama MySQL+Redis+Java ister.
+   - Cihaz tarafında değişen tek şey `ota_url`; **firmware'e dokunulmuyor**.
+
+⚠️ Konsoldaki model listesinde (Xiaozhi Lite, Qwen 3.6, DeepSeek V4, Doubao, GPT-5) **Claude/Gemini
+yok** ve hiçbirinin internet erişimi yok — "maç ne zaman" tipi sorular bu yüzden cevapsız kalıyor.
+Canlı veri = MCP aracı meselesi, model meselesi değil.
 
 ---
 
