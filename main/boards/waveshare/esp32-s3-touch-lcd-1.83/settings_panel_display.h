@@ -257,8 +257,11 @@ private:
         }
 
         lv_obj_set_style_bg_color(theme_switch_, theme->chat_background_color(), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(theme_switch_, theme->text_color(),
-                                  LV_PART_INDICATOR | LV_STATE_CHECKED);
+        // -Werror=deprecated-enum-enum-conversion: lv_part_t ile lv_state_t dogrudan
+        // OR'lanamiyor, secici tipine cevirmek gerekiyor.
+        lv_style_selector_t checked_indicator = static_cast<lv_style_selector_t>(LV_PART_INDICATOR) |
+                                                static_cast<lv_style_selector_t>(LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(theme_switch_, theme->text_color(), checked_indicator);
 
         StyleButton(close_button_, close_button_label_, theme->chat_background_color(),
                     theme->text_color());
