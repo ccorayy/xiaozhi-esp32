@@ -15,6 +15,7 @@
 #include <driver/i2c_master.h>
 #include <driver/spi_master.h>
 #include "settings.h"
+#include "assets/lang_config.h"
 
 #include <esp_lcd_touch_cst816s.h>
 #include <esp_lvgl_port.h>
@@ -56,6 +57,7 @@ private:
     i2c_master_bus_handle_t i2c_bus_;
     Pmic* pmic_ = nullptr;
     Button boot_button_;
+    Button pwr_button_;
     Display* display_;
     PowerSaveTimer* power_save_timer_;
 
@@ -120,6 +122,49 @@ private:
             }
         });
 #endif
+
+        // ------------------------------------------------------------------
+        // PWR button (GPIO41) - sesle ugrasmadan ses ve parlaklik kontrolu.
+        // Stok firmware'de bu buton hic kullanilmiyordu.
+        //   tek tik   -> ses      : 20 > 40 > 60 > 80 > 100 > sessiz > 20 ...
+        //   cift tik  -> parlaklik: 25 > 50 > 75 > 100 > 25 ...
+        // Uzun basma bilerek bos birakildi: 4 sn basili tutmak AXP2101
+        // tarafindan donanimsal kapatmaya ayrilmis durumda.
+        // ------------------------------------------------------------------
+        pwr_button_.OnPressDown([this]() {
+            ESP_LOGI(TAG, "PWR button pressed");
+            if (power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
+        });
+
+        pwr_button_.OnClick([this]() {
+            auto codec = GetAudioCodec();
+            int volume = ((codec->output_volume() / 20) + 1) * 20;
+            if (volume > 100) {
+                volume = 0;
+            }
+            codec->SetOutputVolume(volume);
+            if (volume == 0) {
+                GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+            } else if (volume >= 100) {
+                GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
+            } else {
+                GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+            }
+            ESP_LOGI(TAG, "Volume set to %d", volume);
+        });
+
+        pwr_button_.OnDoubleClick([this]() {
+            auto backlight = GetBacklight();
+            int brightness = ((backlight->brightness() / 25) + 1) * 25;
+            if (brightness > 100) {
+                brightness = 25;
+            }
+            backlight->SetBrightness(brightness, true);  // true -> NVS'e kalici yaz
+            GetDisplay()->ShowNotification("Parlaklik " + std::to_string(brightness));
+            ESP_LOGI(TAG, "Brightness set to %d", brightness);
+        });
     }
 
     void InitializeDisplay() {
@@ -204,7 +249,7 @@ private:
     }
 
 public:
-    WaveshareEsp32s3TouchLCD1inch83() : boot_button_(BOOT_BUTTON_GPIO) {
+    WaveshareEsp32s3TouchLCD1inch83() : boot_button_(BOOT_BUTTON_GPIO), pwr_button_(PWR_BUTTON_GPIO) {
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeAxp2101();
