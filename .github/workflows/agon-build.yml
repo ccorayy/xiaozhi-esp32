@@ -1,0 +1,36 @@
+name: Agon Firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - pwr-button
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Waveshare ESP32-S3-Touch-LCD-1.83 (Turkce)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0.2
+
+    steps:
+      - name: Kaynagi indir
+        uses: actions/checkout@v4
+
+      - name: Derle
+        shell: bash
+        run: |
+          source $IDF_PATH/export.sh
+          python scripts/build.py waveshare/esp32-s3-touch-lcd-1.83 \
+            --name esp32-s3-touch-lcd-1.83 \
+            --language tr-TR
+
+      - name: Binary'yi yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-1.83-turkce-pwrbutton
+          path: build/merged-binary.bin
+          if-no-files-found: error
