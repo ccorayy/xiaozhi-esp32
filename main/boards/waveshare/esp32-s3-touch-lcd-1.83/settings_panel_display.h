@@ -51,6 +51,11 @@ public:
     // Panelle etkilesim uyku sayacini sifirlasin diye.
     void SetOnUserActivity(std::function<void()> callback) { on_activity_ = std::move(callback); }
 
+    // SD kart durumunu board saglar; bu sinif SDMMC'yi tanimaz.
+    void SetSdInfoProvider(std::function<std::string()> provider) {
+        sd_info_provider_ = std::move(provider);
+    }
+
     virtual void SetupUI() override {
         SpiLcdDisplay::SetupUI();
 
@@ -107,6 +112,7 @@ private:
     lv_obj_t* info_battery_ = nullptr;
     lv_obj_t* info_wifi_ = nullptr;
     lv_obj_t* info_ip_ = nullptr;
+    lv_obj_t* info_sd_ = nullptr;
     lv_obj_t* info_version_ = nullptr;
     lv_obj_t* info_uptime_ = nullptr;
     lv_timer_t* info_timer_ = nullptr;
@@ -126,6 +132,7 @@ private:
 
     std::function<void()> on_wifi_config_;
     std::function<void()> on_activity_;
+    std::function<std::string()> sd_info_provider_;
 
     // ------------------------------------------------------------------
     // Ust bar guvenli alan
@@ -288,6 +295,7 @@ private:
         info_battery_ = CreateInfoRow(tile, "Pil");
         info_wifi_ = CreateInfoRow(tile, "WiFi");
         info_ip_ = CreateInfoRow(tile, "IP");
+        info_sd_ = CreateInfoRow(tile, "SD");
         info_version_ = CreateInfoRow(tile, "Surum");
         info_uptime_ = CreateInfoRow(tile, "Calisma");
     }
@@ -506,6 +514,12 @@ private:
         } else {
             lv_label_set_text(info_wifi_, "yok");
             lv_label_set_text(info_ip_, "-");
+        }
+
+        if (sd_info_provider_) {
+            lv_label_set_text(info_sd_, sd_info_provider_().c_str());
+        } else {
+            lv_label_set_text(info_sd_, "-");
         }
 
         const esp_app_desc_t* app_desc = esp_app_get_description();

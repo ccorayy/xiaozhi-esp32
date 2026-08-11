@@ -44,4 +44,12 @@
 #define DISPLAY_BACKLIGHT_PIN   GPIO_NUM_40
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 
+// microSD - SDMMC 1-bit. Kart algilama (CD) ve yazma korumasi (WP) pini yok.
+// Kaynak: Waveshare BSP bileseni waveshare/esp32_s3_touch_lcd_1_83 v2.0.0,
+// include/bsp/esp32_s3_touch_lcd_1_83.h satir 57-59. Stok config.h'da yoktu.
+#define SD_D0_PIN               GPIO_NUM_3
+#define SD_CMD_PIN              GPIO_NUM_1
+#define SD_CLK_PIN              GPIO_NUM_2
+#define SD_MOUNT_POINT          "/sdcard"
+
 #endif // _BOARD_CONFIG_H_

@@ -22,6 +22,11 @@
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
 
+#include <driver/sdmmc_host.h>
+#include <esp_vfs_fat.h>
+#include <sdmmc_cmd.h>
+#include <cstdio>
+
 #define TAG "WaveshareEsp32s3TouchLCD1inch83"
 
 class Pmic : public Axp2101 {
@@ -61,6 +66,79 @@ private:
     Button pwr_button_;
     Display* display_;
     PowerSaveTimer* power_save_timer_;
+    sdmmc_card_t* sd_card_ = nullptr;
+    std::string sd_status_ = "kapali";
+
+    // microSD - SDMMC 1-bit. Stok firmware karta hic dokunmuyordu; pinler
+    // Waveshare BSP bileseninden alindi (bkz. config.h). Kart yoksa veya
+    // baglanamazsa acilis normal devam eder, sadece sd_status_ yazisi degisir.
+    void InitializeSdCard() {
+        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+
+        sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+        slot_config.clk = SD_CLK_PIN;
+        slot_config.cmd = SD_CMD_PIN;
+        slot_config.d0 = SD_D0_PIN;
+        slot_config.d1 = GPIO_NUM_NC;
+        slot_config.d2 = GPIO_NUM_NC;
+        slot_config.d3 = GPIO_NUM_NC;
+        slot_config.cd = SDMMC_SLOT_NO_CD;  // kartta algilama pini yok
+        slot_config.wp = SDMMC_SLOT_NO_WP;
+        slot_config.width = 1;
+
+        esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
+        mount_config.format_if_mount_failed = false;  // karti ASLA formatlama
+        mount_config.max_files = 5;
+        mount_config.allocation_unit_size = 16 * 1024;
+
+        esp_err_t err = esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot_config,
+                                                &mount_config, &sd_card_);
+        if (err != ESP_OK) {
+            sd_card_ = nullptr;
+            sd_status_ = (err == ESP_ERR_TIMEOUT) ? "kart yok" : esp_err_to_name(err);
+            ESP_LOGW(TAG, "SD card mount failed: %s", esp_err_to_name(err));
+            return;
+        }
+
+        sdmmc_card_print_info(stdout, sd_card_);
+
+        uint64_t mb = (static_cast<uint64_t>(sd_card_->csd.capacity) * sd_card_->csd.sector_size)
+                      / (1024 * 1024);
+        char size_text[24];
+        if (mb >= 1024) {
+            snprintf(size_text, sizeof(size_text), "%.1f GB", mb / 1024.0);
+        } else {
+            snprintf(size_text, sizeof(size_text), "%llu MB", mb);
+        }
+        sd_status_ = std::string(size_text) + (TestSdReadWrite() ? " OK" : " R/O");
+        ESP_LOGI(TAG, "SD card mounted at %s (%s)", SD_MOUNT_POINT, sd_status_.c_str());
+    }
+
+    // Kartin gercekten yazilip okunabildigini kanitlar; test dosyasini siler.
+    bool TestSdReadWrite() {
+        const char* path = SD_MOUNT_POINT "/xiaozhi-test.txt";
+        FILE* f = fopen(path, "w");
+        if (f == nullptr) {
+            ESP_LOGW(TAG, "SD write test: fopen(w) failed");
+            return false;
+        }
+        bool ok = fprintf(f, "xiaozhi sd test\n") > 0;
+        fclose(f);
+        if (!ok) {
+            return false;
+        }
+
+        f = fopen(path, "r");
+        if (f == nullptr) {
+            ESP_LOGW(TAG, "SD read test: fopen(r) failed");
+            return false;
+        }
+        char buffer[32] = {};
+        ok = fgets(buffer, sizeof(buffer), f) != nullptr;
+        fclose(f);
+        remove(path);
+        return ok;
+    }
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -204,6 +282,7 @@ private:
                 power_save_timer_->WakeUp();
             }
         });
+        settings_display->SetSdInfoProvider([this]() { return sd_status_; });
         display_ = settings_display;
     }
 
@@ -261,6 +340,7 @@ public:
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeAxp2101();
+        InitializeSdCard();
         InitializeSpi();
         InitializeDisplay();
         InitializeTouch();
