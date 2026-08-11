@@ -91,7 +91,7 @@ private:
     };
 
     lv_obj_t* panel_ = nullptr;
-    lv_obj_t* tileview_ = nullptr;
+    lv_obj_t* pager_ = nullptr;
     lv_obj_t* open_strip_ = nullptr;
 
     // Sayfa 1 - Ayarlar
@@ -164,24 +164,26 @@ private:
         lv_obj_remove_flag(panel_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(panel_, GestureEventCb, LV_EVENT_GESTURE, this);
 
-        tileview_ = lv_tileview_create(panel_);
-        lv_obj_set_size(tileview_, width_, height_);
-        lv_obj_set_style_bg_opa(tileview_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(tileview_, 0, 0);
-        lv_obj_set_scrollbar_mode(tileview_, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_add_flag(tileview_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        // lv_tileview upstream'de kapali (CONFIG_LV_USE_TILEVIEW=n, flash tasarrufu).
+        // Paylasilan sdkconfig'i degistirmek yerine sayfalamayi yatay scroll snap ile
+        // kendimiz kuruyoruz - sadece temel nesne ozellikleri, ek bagimlilik yok.
+        pager_ = lv_obj_create(panel_);
+        lv_obj_set_size(pager_, width_, height_);
+        lv_obj_set_pos(pager_, 0, 0);
+        lv_obj_set_style_bg_opa(pager_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(pager_, 0, 0);
+        lv_obj_set_style_pad_all(pager_, 0, 0);
+        lv_obj_set_style_pad_column(pager_, 0, 0);
+        lv_obj_set_flex_flow(pager_, LV_FLEX_FLOW_ROW);
+        lv_obj_set_scroll_dir(pager_, LV_DIR_HOR);
+        lv_obj_set_scroll_snap_x(pager_, LV_SCROLL_SNAP_CENTER);
+        lv_obj_add_flag(pager_, LV_OBJ_FLAG_SCROLL_ONE);  // tek hamlede tek sayfa
+        lv_obj_set_scrollbar_mode(pager_, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_add_flag(pager_, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-        lv_obj_t* tile_settings = lv_tileview_add_tile(tileview_, 0, 0, LV_DIR_RIGHT);
-        lv_obj_t* tile_info = lv_tileview_add_tile(tileview_, 1, 0, LV_DIR_HOR);
-        lv_obj_t* tile_actions = lv_tileview_add_tile(tileview_, 2, 0, LV_DIR_LEFT);
-
-        for (lv_obj_t* tile : {tile_settings, tile_info, tile_actions}) {
-            PrepareTile(tile);
-        }
-
-        BuildSettingsTile(tile_settings);
-        BuildInfoTile(tile_info);
-        BuildActionsTile(tile_actions);
+        BuildSettingsTile(CreatePage());
+        BuildInfoTile(CreatePage());
+        BuildActionsTile(CreatePage());
 
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
 
@@ -221,15 +223,24 @@ private:
         lv_obj_add_event_cb(open_strip_, GestureEventCb, LV_EVENT_GESTURE, this);
     }
 
-    void PrepareTile(lv_obj_t* tile) {
-        lv_obj_set_style_pad_left(tile, kSafeInsetX, 0);
-        lv_obj_set_style_pad_right(tile, kSafeInsetX, 0);
-        lv_obj_set_style_pad_top(tile, kSafeInsetTop, 0);
-        lv_obj_set_style_pad_bottom(tile, 14, 0);
-        lv_obj_set_style_pad_row(tile, 8, 0);
-        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_t* CreatePage() {
+        lv_obj_t* page = lv_obj_create(pager_);
+        lv_obj_set_size(page, width_, height_);
+        lv_obj_set_style_radius(page, 0, 0);
+        lv_obj_set_style_border_width(page, 0, 0);
+        lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_left(page, kSafeInsetX, 0);
+        lv_obj_set_style_pad_right(page, kSafeInsetX, 0);
+        lv_obj_set_style_pad_top(page, kSafeInsetTop, 0);
+        lv_obj_set_style_pad_bottom(page, 14, 0);
+        lv_obj_set_style_pad_row(page, 8, 0);
+        lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
+        // Sayfa kendi icinde kaymasin; yatay kaydirmayi pager_ yonetiyor, dikey
+        // hareket de LV_EVENT_GESTURE olarak panele ulassin diye.
+        lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_add_flag(page, LV_OBJ_FLAG_EVENT_BUBBLE);
+        return page;
     }
 
     // ------------------------------------------------------------------

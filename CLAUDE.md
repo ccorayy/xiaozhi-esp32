@@ -90,7 +90,7 @@ Board `.cc`'de sadece iki yer değişti (include + display nesnesinin oluşturul
 | Ekrana dokunma | `ToggleChatState()` — Türkçe wake word imkânsız olduğu için asıl kullanım yolu |
 | Aşağı kaydırma | Panel açılır (yedek: üst 28 px'lik görünmez şeride dokunma) |
 | Yukarı kaydırma | Panel kapanır |
-| Sağa/sola kaydırma | Sayfalar: Ayarlar / Bilgi / Kısayollar (`lv_tileview`) |
+| Sağa/sola kaydırma | Sayfalar: Ayarlar / Bilgi / Kısayollar |
 
 Tasarım kararları — bozmadan önce sebebini oku:
 
@@ -196,6 +196,7 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 |---|---|
 | **Dokunmatik** | Upstream'de hiçbir tıklanabilir widget yok. Bu fork'ta `settings_panel_display.h` ile kullanılıyor (bkz. §3). Kaydırma olayı parmağın altındaki nesneye gider; `container_`/`emoji_box_` üzerinde `EVENT_BUBBLE` ile ekrana çıkarılıyor ve scroll'un hareketi yutmaması için o ikisinde `SCROLLABLE` kapatılıyor. |
 | **`-Werror` enum** | `LV_PART_x \| LV_STATE_x` doğrudan OR'lanınca `-Werror=deprecated-enum-enum-conversion` derlemeyi durduruyor. `lv_style_selector_t`'ye cast et. Bir CI turu bu yüzden yandı. |
+| **Kapalı LVGL widget'ları** | `sdkconfig.defaults`'ta flash tasarrufu için `=n`: **tileview, tabview, keyboard, list, menu, msgbox, spinner, chart, calendar, span, spinbox, led, win, animimg**. Kullanmaya kalkarsan "was not declared in this scope" alırsın — bir CI turu tileview yüzünden yandı. Sayfalama `lv_obj` + `lv_obj_set_scroll_snap_x` + `SCROLL_ONE` ile kendimiz yapıldı. `slider`, `switch`, `button`, `buttonmatrix` **açık**. Paylaşılan sdkconfig'i değiştirmek tüm board'ları etkiler, son çare olsun. |
 | **microSD** | Firmware **hiç kullanmıyor**. Board dosyasında 0 referans; `main/CMakeLists.txt` SDMMC sürücülerini sadece ESP32-P4 EV board için linkliyor. Assets flash partition'ında, müzik forkları HTTP stream ediyor. Upstream issue #1053 açık. |
 | **Wake word Türkçe** | **Mümkün değil.** ESP-SR WakeNet/MultiNet sadece İngilizce + Mandarin. `--list-wake-words` çıktısında Türkçe yok. Çözüm: İngilizce wake word veya dokunmatik/buton ile push-to-talk. |
 | **Arayüz dili** | `LANGUAGE_TR_TR` var (38 dilden biri), `--language tr-TR` çalışıyor. Ama **diyalog** dili sunucu tarafında belirleniyor. |
@@ -209,8 +210,9 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 
 1. ~~**Tam LVGL ayar paneli**~~ ✅ **bitti** — bkz. §3.
 2. **Panele WiFi sayfası** — sıradaki iş. İki parça: (a) kayıtlı ağ listesi, varsayılan seç/sil —
-   `SsidManager` ile kolay, klavye gerekmiyor; (b) yeni ağ eklemek için `lv_keyboard` ile şifre
-   girişi — 240 px'de tuş başına 24 px, eziyetli ama yapılabilir.
+   `SsidManager` ile kolay, klavye gerekmiyor; (b) yeni ağ eklemek için şifre girişi — 240 px'de
+   tuş başına 24 px, eziyetli ama yapılabilir. ⚠️ `LV_USE_KEYBOARD=n`, `lv_keyboard` yok;
+   `lv_buttonmatrix` açık, klavyeyi onunla kurmak gerekir.
    ⚠️ Ağ **taraması** için bileşende public API yok, `esp_wifi_scan_start()` doğrudan
    çağrılacak; bileşen de arka planda kendi taramasını yapıyor, çakışma hatasını yakala.
 3. **Özel emoji/yüz seti** — `78/xiaozhi-assets-generator` (tarayıcıda çalışır), 21 ifade, 240×284. OTA ile iner, flash gerekmez, kod değişikliği yok.
