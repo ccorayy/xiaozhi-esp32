@@ -14,7 +14,7 @@
 //   ekrana dokunma      -> sohbeti baslat/bitir (boot butonuyla ayni is)
 //   asagi kaydirma      -> panel acilir  (ust seride dokunmak da acar)
 //   yukari kaydirma     -> panel kapanir
-//   saga/sola kaydirma  -> sayfalar: Ayarlar / Bilgi / Kisayollar
+//   saga/sola kaydirma  -> sayfalar: Ayarlar / Bilgi / Kisayollar / WiFi
 // ---------------------------------------------------------------------------
 
 #include "application.h"
@@ -29,10 +29,17 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <lvgl.h>
+#include <esp_wifi.h>
+#include <ssid_manager.h>
 #include <wifi_manager.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+#include <cstdio>
 #include <functional>
 #include <initializer_list>
+#include <string>
 #include <vector>
 
 class SettingsPanelDisplay : public SpiLcdDisplay {
@@ -134,6 +141,30 @@ private:
     std::function<void()> on_activity_;
     std::function<std::string()> sd_info_provider_;
 
+    // Sayfa 4 - WiFi
+    lv_obj_t* wifi_status_label_ = nullptr;
+    lv_obj_t* wifi_scan_button_ = nullptr;
+    lv_obj_t* wifi_scan_button_label_ = nullptr;
+    lv_obj_t* wifi_list_ = nullptr;
+    bool wifi_scanning_ = false;
+
+    struct ScanResult {
+        std::string ssid;
+        int rssi = 0;
+        bool encrypted = true;
+    };
+    std::vector<ScanResult> scan_results_;
+
+    // Sifre klavyesi (LV_USE_KEYBOARD=n oldugu icin lv_buttonmatrix ile elde yapildi)
+    lv_obj_t* kb_overlay_ = nullptr;
+    lv_obj_t* kb_title_ = nullptr;
+    lv_obj_t* kb_field_ = nullptr;
+    lv_obj_t* kb_matrix_ = nullptr;
+    std::string kb_ssid_;
+    std::string kb_password_;
+    bool kb_upper_ = false;
+    bool kb_symbols_ = false;
+
     // ------------------------------------------------------------------
     // Ust bar guvenli alan
     // ------------------------------------------------------------------
@@ -191,7 +222,9 @@ private:
         BuildSettingsTile(CreatePage());
         BuildInfoTile(CreatePage());
         BuildActionsTile(CreatePage());
+        BuildWifiTile(CreatePage());
 
+        BuildKeyboard();
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
 
         StylePanel();
@@ -254,7 +287,7 @@ private:
     // Sayfa 1 - Ayarlar
     // ------------------------------------------------------------------
     void BuildSettingsTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Ayarlar  1/3");
+        CreateHeader(tile, "Ayarlar  1/4");
 
         lv_obj_t* volume_row = CreateRow(tile);
         CreateLabel(volume_row, "Ses");
@@ -291,7 +324,7 @@ private:
     // Sayfa 2 - Bilgi
     // ------------------------------------------------------------------
     void BuildInfoTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Bilgi  2/3");
+        CreateHeader(tile, "Bilgi  2/4");
         info_battery_ = CreateInfoRow(tile, "Pil");
         info_wifi_ = CreateInfoRow(tile, "WiFi");
         info_ip_ = CreateInfoRow(tile, "IP");
@@ -310,7 +343,7 @@ private:
     // Sayfa 3 - Kisayollar
     // ------------------------------------------------------------------
     void BuildActionsTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Kisayollar  3/3");
+        CreateHeader(tile, "Kisayollar  3/4");
 
         chat_button_ = CreateButton(tile, "Sohbeti Baslat / Bitir", &chat_button_label_);
         lv_obj_add_event_cb(chat_button_, ChatEventCb, LV_EVENT_CLICKED, this);
@@ -336,6 +369,288 @@ private:
         confirm.action = std::move(action);
         confirm.button = CreateButton(tile, idle_text, &confirm.label);
         lv_obj_add_event_cb(confirm.button, ConfirmEventCb, LV_EVENT_CLICKED, &confirm);
+    }
+
+    // ------------------------------------------------------------------
+    // Sayfa 4 - WiFi
+    // ------------------------------------------------------------------
+    static constexpr int kMaxScanResults = 15;
+
+    void BuildWifiTile(lv_obj_t* tile) {
+        CreateHeader(tile, "WiFi  4/4");
+
+        wifi_status_label_ = CreateLabel(tile, "-");
+        lv_obj_set_width(wifi_status_label_, lv_pct(100));
+        lv_label_set_long_mode(wifi_status_label_, LV_LABEL_LONG_DOT);
+
+        wifi_scan_button_ = CreateButton(tile, "Aglari Tara", &wifi_scan_button_label_);
+        lv_obj_set_height(wifi_scan_button_, 32);
+        lv_obj_add_event_cb(wifi_scan_button_, WifiScanEventCb, LV_EVENT_CLICKED, this);
+
+        // Kayitli aglar ve tarama sonuclari buraya diziliyor. Icerik surekli
+        // yeniden uretildigi icin buradaki etiketler plain_labels_ e EKLENMIYOR;
+        // eklenseydi lv_obj_clean sonrasi StylePanel serbest birakilmis
+        // isaretcilere dokunurdu.
+        wifi_list_ = lv_obj_create(tile);
+        lv_obj_set_width(wifi_list_, lv_pct(100));
+        lv_obj_set_flex_grow(wifi_list_, 1);
+        lv_obj_set_style_bg_opa(wifi_list_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(wifi_list_, 0, 0);
+        lv_obj_set_style_pad_all(wifi_list_, 0, 0);
+        lv_obj_set_style_pad_row(wifi_list_, 4, 0);
+        lv_obj_set_flex_flow(wifi_list_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_scroll_dir(wifi_list_, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(wifi_list_, LV_SCROLLBAR_MODE_OFF);
+    }
+
+    void RefreshWifiStatus() {
+        if (wifi_status_label_ == nullptr) {
+            return;
+        }
+        auto& wifi = WifiManager::GetInstance();
+        if (wifi.IsConnected()) {
+            lv_label_set_text_fmt(wifi_status_label_, "%s  %d dBm", wifi.GetSsid().c_str(),
+                                  wifi.GetRssi());
+        } else {
+            lv_label_set_text(wifi_status_label_, "Bagli degil");
+        }
+    }
+
+    lv_obj_t* AddListRow(const char* text, int index, lv_event_cb_t cb, bool long_press_deletes) {
+        lv_obj_t* button = lv_button_create(wifi_list_);
+        lv_obj_set_width(button, lv_pct(100));
+        lv_obj_set_height(button, 30);
+        lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(index)));
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_obj_center(label);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        if (long_press_deletes) {
+            lv_obj_add_event_cb(button, SavedNetworkDeleteCb, LV_EVENT_LONG_PRESSED, this);
+        }
+        if (current_theme_ != nullptr) {
+            auto* theme = static_cast<LvglTheme*>(current_theme_);
+            StyleButton(button, label, theme->chat_background_color(), theme->text_color());
+        }
+        return button;
+    }
+
+    void ShowSavedNetworks() {
+        lv_obj_clean(wifi_list_);
+        const auto& list = SsidManager::GetInstance().GetSsidList();
+        if (list.empty()) {
+            AddListRow("Kayitli ag yok", -1, NoopEventCb, false);
+            return;
+        }
+        int index = 0;
+        for (const auto& item : list) {
+            AddListRow(item.ssid.c_str(), index, SavedNetworkClickedCb, true);
+            index++;
+        }
+    }
+
+    void ShowScanResults() {
+        lv_obj_clean(wifi_list_);
+        if (scan_results_.empty()) {
+            AddListRow("Ag bulunamadi", -1, NoopEventCb, false);
+            return;
+        }
+        for (size_t i = 0; i < scan_results_.size(); i++) {
+            const auto& result = scan_results_[i];
+            char row[96];
+            snprintf(row, sizeof(row), "%s  %d dBm%s", result.ssid.c_str(), result.rssi,
+                     result.encrypted ? "" : "  (acik)");
+            AddListRow(row, static_cast<int>(i), ScanResultClickedCb, false);
+        }
+    }
+
+    void StartScan() {
+        if (wifi_scanning_) {
+            return;
+        }
+        wifi_scanning_ = true;
+        lv_label_set_text(wifi_scan_button_label_, "Taraniyor...");
+        xTaskCreate(WifiScanTask, "panel_wifi_scan", 4096, this, 2, nullptr);
+    }
+
+    void DoScan() {
+        std::vector<ScanResult> found;
+
+        wifi_scan_config_t cfg = {};
+        cfg.show_hidden = false;
+        cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+        cfg.scan_time.active.min = 100;
+        cfg.scan_time.active.max = 300;
+
+        // WiFi bileseni de arka planda kendi taramasini yapiyor; ayni anda iki
+        // tarama olamaz, o durumda ESP_ERR_WIFI_STATE doner. Bir kez bekleyip
+        // tekrar deniyoruz.
+        esp_err_t err = esp_wifi_scan_start(&cfg, true);
+        if (err == ESP_ERR_WIFI_STATE) {
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            err = esp_wifi_scan_start(&cfg, true);
+        }
+
+        if (err == ESP_OK) {
+            uint16_t count = 0;
+            esp_wifi_scan_get_ap_num(&count);
+            if (count > kMaxScanResults) {
+                count = kMaxScanResults;
+            }
+            if (count > 0) {
+                std::vector<wifi_ap_record_t> records(count);
+                esp_wifi_scan_get_ap_records(&count, records.data());
+                for (uint16_t i = 0; i < count; i++) {
+                    std::string ssid(reinterpret_cast<const char*>(records[i].ssid));
+                    if (ssid.empty()) {
+                        continue;
+                    }
+                    ScanResult item;
+                    item.ssid = ssid;
+                    item.rssi = records[i].rssi;
+                    item.encrypted = records[i].authmode != WIFI_AUTH_OPEN;
+                    found.push_back(item);
+                }
+            }
+        } else {
+            ESP_LOGW("SettingsPanel", "WiFi scan failed: %s", esp_err_to_name(err));
+        }
+
+        // Bu bir FreeRTOS gorevi, LVGL gorevi degil - kilidi almak sart.
+        DisplayLockGuard lock(this);
+        scan_results_ = std::move(found);
+        wifi_scanning_ = false;
+        lv_label_set_text(wifi_scan_button_label_, "Aglari Tara");
+        ShowScanResults();
+    }
+
+    // ------------------------------------------------------------------
+    // Sifre klavyesi - LV_USE_KEYBOARD=n oldugu icin lv_buttonmatrix ile elde
+    // ------------------------------------------------------------------
+    static const char* const* KeyboardMap(bool upper, bool symbols) {
+        static const char* lower_map[] = {
+            "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+            "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+            "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
+            "^", "z", "x", "c", "v", "b", "n", "m", "DEL", "\n",
+            "#+=", "SP", "X", "OK", ""};
+        static const char* upper_map[] = {
+            "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+            "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+            "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
+            "^", "Z", "X", "C", "V", "B", "N", "M", "DEL", "\n",
+            "#+=", "SP", "X", "OK", ""};
+        static const char* symbol_map[] = {
+            "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+            "!", "@", "#", "$", "%", "&", "*", "(", ")", "\n",
+            "-", "_", "+", "=", "/", ":", ";", ",", ".", "\n",
+            "?", "'", "[", "]", "{", "}", "<", ">", "DEL", "\n",
+            "abc", "SP", "X", "OK", ""};
+        if (symbols) {
+            return symbol_map;
+        }
+        return upper ? upper_map : lower_map;
+    }
+
+    void BuildKeyboard() {
+        kb_overlay_ = lv_obj_create(panel_);
+        lv_obj_set_size(kb_overlay_, width_, height_);
+        lv_obj_set_pos(kb_overlay_, 0, 0);
+        lv_obj_add_flag(kb_overlay_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_radius(kb_overlay_, 0, 0);
+        lv_obj_set_style_border_width(kb_overlay_, 0, 0);
+        lv_obj_set_style_pad_left(kb_overlay_, 6, 0);
+        lv_obj_set_style_pad_right(kb_overlay_, 6, 0);
+        lv_obj_set_style_pad_top(kb_overlay_, kSafeInsetTop, 0);
+        lv_obj_set_style_pad_bottom(kb_overlay_, 6, 0);
+        lv_obj_set_style_pad_row(kb_overlay_, 4, 0);
+        lv_obj_set_flex_flow(kb_overlay_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(kb_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+
+        kb_title_ = lv_label_create(kb_overlay_);
+        lv_label_set_text(kb_title_, "");
+        lv_label_set_long_mode(kb_title_, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(kb_title_, lv_pct(100));
+
+        kb_field_ = lv_label_create(kb_overlay_);
+        lv_label_set_text(kb_field_, "");
+        lv_label_set_long_mode(kb_field_, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(kb_field_, lv_pct(100));
+
+        kb_matrix_ = lv_buttonmatrix_create(kb_overlay_);
+        lv_obj_set_width(kb_matrix_, lv_pct(100));
+        lv_obj_set_flex_grow(kb_matrix_, 1);
+        lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(false, false));
+        lv_obj_add_event_cb(kb_matrix_, KeyboardEventCb, LV_EVENT_VALUE_CHANGED, this);
+    }
+
+    void ShowKeyboard(const std::string& ssid) {
+        kb_ssid_ = ssid;
+        kb_password_.clear();
+        kb_upper_ = false;
+        kb_symbols_ = false;
+        lv_label_set_text_fmt(kb_title_, "%s sifresi", ssid.c_str());
+        lv_label_set_text(kb_field_, "");
+        lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(false, false));
+        lv_obj_remove_flag(kb_overlay_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void HideKeyboard() {
+        if (kb_overlay_ != nullptr) {
+            lv_obj_add_flag(kb_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    void OnKeyPressed() {
+        uint32_t id = lv_buttonmatrix_get_selected_button(kb_matrix_);
+        const char* text = lv_buttonmatrix_get_button_text(kb_matrix_, id);
+        if (text == nullptr) {
+            return;
+        }
+        NotifyActivity();
+        std::string key(text);
+
+        if (key == "DEL") {
+            if (!kb_password_.empty()) {
+                kb_password_.pop_back();
+            }
+        } else if (key == "^") {
+            kb_upper_ = !kb_upper_;
+            lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(kb_upper_, kb_symbols_));
+        } else if (key == "#+=" || key == "abc") {
+            kb_symbols_ = !kb_symbols_;
+            lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(kb_upper_, kb_symbols_));
+        } else if (key == "SP") {
+            kb_password_ += ' ';
+        } else if (key == "X") {
+            HideKeyboard();
+            return;
+        } else if (key == "OK") {
+            SaveNetwork();
+            return;
+        } else {
+            kb_password_ += key;
+        }
+        lv_label_set_text(kb_field_, kb_password_.c_str());
+    }
+
+    void SaveNetwork() {
+        std::string ssid = kb_ssid_;
+        std::string password = kb_password_;
+        HideKeyboard();
+        lv_label_set_text_fmt(wifi_status_label_, "%s kaydedildi, baglaniliyor", ssid.c_str());
+        ShowSavedNetworks();
+
+        // NVS yazimi ve WiFi yeniden baslatma LVGL gorevinde yapilmamali.
+        Application::GetInstance().Schedule([ssid, password]() {
+            SsidManager::GetInstance().AddSsid(ssid, password);
+            auto& wifi = WifiManager::GetInstance();
+            wifi.StopStation();
+            vTaskDelay(pdMS_TO_TICKS(500));
+            wifi.StartStation();
+        });
     }
 
     // ------------------------------------------------------------------
@@ -411,6 +726,19 @@ private:
                     theme->text_color());
         StyleButton(chat_button_, chat_button_label_, theme->chat_background_color(),
                     theme->text_color());
+        StyleButton(wifi_scan_button_, wifi_scan_button_label_, theme->chat_background_color(),
+                    theme->text_color());
+        if (kb_overlay_ != nullptr) {
+            lv_obj_set_style_bg_opa(kb_overlay_, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(kb_overlay_, theme->background_color(), 0);
+            lv_obj_set_style_text_color(kb_overlay_, theme->text_color(), 0);
+            lv_obj_set_style_text_font(kb_overlay_, theme->text_font()->font(), 0);
+            lv_obj_set_style_text_color(kb_title_, theme->text_color(), 0);
+            lv_obj_set_style_text_color(kb_field_, theme->text_color(), 0);
+        }
+        if (wifi_status_label_ != nullptr) {
+            lv_obj_set_style_text_color(wifi_status_label_, theme->text_color(), 0);
+        }
         RefreshConfirmStyle(wifi_confirm_);
         RefreshConfirmStyle(restart_confirm_);
     }
@@ -450,6 +778,8 @@ private:
         }
         SyncControlsFromDevice();
         RefreshInfo();
+        RefreshWifiStatus();
+        ShowSavedNetworks();
         lv_obj_remove_flag(panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
         NotifyActivity();
@@ -459,6 +789,7 @@ private:
         if (panel_ == nullptr || lv_obj_has_flag(panel_, LV_OBJ_FLAG_HIDDEN)) {
             return;
         }
+        HideKeyboard();
         ResetConfirm(wifi_confirm_);
         ResetConfirm(restart_confirm_);
         lv_obj_add_flag(panel_, LV_OBJ_FLAG_HIDDEN);
@@ -666,6 +997,54 @@ private:
     static void ThemeEventCb(lv_event_t* e) { Self(e)->OnThemeEvent(); }
     static void ChatEventCb(lv_event_t* e) { Self(e)->OnChatButton(); }
 
+    static void WifiScanEventCb(lv_event_t* e) { Self(e)->StartScan(); }
+    static void KeyboardEventCb(lv_event_t* e) { Self(e)->OnKeyPressed(); }
+    static void NoopEventCb(lv_event_t* e) { (void)e; }
+
+    static void WifiScanTask(void* arg) {
+        static_cast<SettingsPanelDisplay*>(arg)->DoScan();
+        vTaskDelete(nullptr);
+    }
+
+    static int RowIndex(lv_event_t* e) {
+        auto* obj = static_cast<lv_obj_t*>(lv_event_get_target(e));
+        return static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(obj)));
+    }
+
+    static void ScanResultClickedCb(lv_event_t* e) {
+        auto* self = Self(e);
+        int index = RowIndex(e);
+        if (index < 0 || index >= static_cast<int>(self->scan_results_.size())) {
+            return;
+        }
+        self->NotifyActivity();
+        self->ShowKeyboard(self->scan_results_[index].ssid);
+    }
+
+    static void SavedNetworkClickedCb(lv_event_t* e) {
+        auto* self = Self(e);
+        int index = RowIndex(e);
+        if (index < 0) {
+            return;
+        }
+        self->NotifyActivity();
+        SsidManager::GetInstance().SetDefaultSsid(index);
+        lv_label_set_text(self->wifi_status_label_, "Varsayilan ag degistirildi");
+        self->ShowSavedNetworks();
+    }
+
+    static void SavedNetworkDeleteCb(lv_event_t* e) {
+        auto* self = Self(e);
+        int index = RowIndex(e);
+        if (index < 0) {
+            return;
+        }
+        self->NotifyActivity();
+        SsidManager::GetInstance().RemoveSsid(index);
+        lv_label_set_text(self->wifi_status_label_, "Ag silindi");
+        self->ShowSavedNetworks();
+    }
+
     static void ConfirmEventCb(lv_event_t* e) {
         auto* confirm = static_cast<ConfirmButton*>(lv_event_get_user_data(e));
         confirm->owner->OnConfirmPress(*confirm);
@@ -682,6 +1061,7 @@ private:
         auto* self = static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer));
         if (self->IsPanelOpen()) {
             self->RefreshInfo();
+            self->RefreshWifiStatus();
         }
     }
 };
