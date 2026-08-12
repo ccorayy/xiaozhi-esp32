@@ -1,4 +1,3 @@
-
 # CLAUDE.md — Bu fork hakkında bilmen gerekenler
 
 > Bu dosya, bu depoda çalışan AI ajanı için yazıldı. Genel proje mimarisi için köküdeki
@@ -123,8 +122,8 @@ artifact: xiaozhi-1.83-turkce-pwrbutton → build/merged-binary.bin
 
 **`pwr-button` dalına her push otomatik derleme tetikler.** Süre ~5-6 dakika.
 
-Kullanıcı artifact'ı Actions sekmesinden indirir ve cihaza kendisi yükler.
-Ajan cihaza erişemez — **flash adımını asla "yapıldı" diye varsayma, kullanıcıya sor.**
+Artifact'ı **ajan indirir ve cihaza yükler** (bkz. §9 kural 4): `gh run download <id>`.
+Cihazda **test etmek** kullanıcıda — ekranı göremezsin, "çalışıyor" deme.
 
 ### `scripts/build.py` faydalı seçenekler
 
@@ -228,8 +227,12 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
    - *Yerel ses:* `AudioService::PlaySound` sadece bellekteki Ogg/Opus alıyor, akış yolu yok.
      Kısa bildirim sesleri olur, şarkı için streaming decoder yazmak gerekir.
    - *MCP dosya aracı:* asistanın SD'ye not yazıp okuması — kalıcı hafıza.
-6. **Kendi sunucusu** — `xinnan-tech/xiaozhi-esp32-server`. Hedef donanım: **Raspberry Pi 5 8 GB**
-   (Hetzner CPX22 kullanıcının üretim sunucusu, oraya kurulmayacak). Kaynaktan doğrulandı:
+6. ~~**Kendi sunucusu**~~ ✅ **kuruldu ve çalışıyor** (12 Ağu 2026) — bkz. §10.
+
+### Eski notlar (kurulum öncesi araştırma, referans için)
+
+   `xinnan-tech/xiaozhi-esp32-server`. Hedef donanım: **Raspberry Pi 5 8 GB**
+   (Hetzner CPX22 kullanıcının üretim sunucusu, oraya kurulmadı). Kaynaktan doğrulandı:
    - LLM: **Gemini yerleşik** (`llm/gemini/gemini.py`). **Claude için sağlayıcı yok** — genel
      `llm/openai/openai.py` `base_url` aldığı için OpenAI-uyumlu uç üzerinden denenebilir.
    - ASR: "GroqASR" diye sağlayıcı yok. `asr/openai.py` `base_url`+`api_key`+`model_name` alıyor →
@@ -262,3 +265,51 @@ Canlı veri = MCP aracı meselesi, model meselesi değil.
 5. **Sırlar depoya girmez.** Bu fork **public**. Cihazın MAC'i, `board/uuid`'si, WiFi SSID/şifresi, MQTT credential'ları hiçbir commit'e girmemeli. Yerel notlar için `cihaz-notlari.local.md` kullan — `.gitignore`'da.
 6. **Değişiklik → push → kullanıcıya haber.** Push otomatik derleme tetikler; kullanıcıya artifact'ın hazır olacağını ve flash sırasını (NVS dahil) hatırlat.
 7. **Riskli bir şey önermeden önce geri dönüş yolunu söyle.** Kullanıcının `kritik-yedek.bin` (64KB) ve `nvs-only.bin` (16KB) yedekleri var; tam 16MB yedeği yok.
+
+---
+
+## 10. Kendi sunucusu — kurulu ve çalışıyor (12 Ağu 2026)
+
+**Cihaz artık xiaozhi.me'ye bağlanmıyor.** Konsoldaki ajan ayarları, hafıza kayıtları ve model
+seçimi devre dışı; her şey Pi'deki config dosyasından geliyor.
+
+| | |
+|---|---|
+| Donanım | Raspberry Pi 5, 8 GB, NVMe SSD, Debian 13 (trixie), aarch64 |
+| Adres | `192.168.1.80` (WiFi "Pars" 5 GHz, MAC `88:A2:9E:86:C9:3F`) — modemde sabitlendi (Keenetic → İstemci Listesi → cihazı kaydet + sabit IP) |
+| SSH | `ssh -i ~/.ssh/pi_xiaozhi pi@192.168.1.80` — anahtar bu makinede. **`sudo` şifre ister** (kurulumda şifresiz sanılmıştı, masaüstünden gelen önbellek yanıltmıştı). Gerek de yok: `pi` kullanıcısı `docker` grubunda, `docker` komutları sudo'suz çalışır |
+| Dizin | `~/xiaozhi-server/` — `docker-compose.yml`, `data/.config.yaml`, `data/tr-prompt.txt`, `patches/` |
+| İmaj | `ghcr.io/xinnan-tech/xiaozhi-esp32-server:server_latest` (arm64, 3.08 GB), minimal kurulum |
+| Portlar | 8000 websocket, 8003 HTTP/OTA |
+| Cihaz ayarı | `ota_url` = `http://192.168.1.80:8003/xiaozhi/ota/` (WiFi portal → Advanced) |
+
+Sağlayıcılar: **ASR** GroqASR (`whisper-large-v3-turbo`) — Türkçeyi kusursuz tanıyor.
+**LLM** Groq `openai/gpt-oss-120b`. **TTS** EdgeTTS `tr-TR-EmelNeural`. Hafıza kapalı.
+
+### Bu kurulumda yanılıp düzelttiğimiz şeyler
+
+Hepsi cihazda "şu an bir sorun var" olarak görünüyordu; log'a bakmadan ayırt edilemez.
+
+| Belirti | Gerçek sebep | Çözüm |
+|---|---|---|
+| `Unknown field for Schema: minimum` | Yerleşik `gemini` sağlayıcısı eski Google SDK'sını kullanıyor, cihazın araç şemalarındaki `minimum/maximum` alanlarında patlıyor | Aynı modeli **OpenAI uyumlu uçtan** çağır (`type: openai` + `base_url`) |
+| Model Çince cevaplıyor, sonra TTS "No audio was received" | Şablondaki `{{language}}` **TTS bloğundaki `language` alanından** okunuyor; boşsa varsayılan Çince. Türkçe ses Çince metni seslendiremiyor | `TTS.EdgeTTS.language: "Turkce"` |
+| Sesli cevaba İngilizce düşünme metni karışıyor | `gpt-oss` akıl yürütmeyi `<think>` etiketi **olmadan** content'e akıtıyor; mevcut filtre yakalamıyor, araç yolunda hiç çalışmıyor | `openai.py` içindeki `THINKING_DISABLED_DOMAINS`'e `"groq.com": {"reasoning_format": "hidden"}` — dosya `patches/llm_openai.py` olarak mount edildi |
+| Çince metinle TTS kilitleniyor | Yerleşik eklentiler (`play_music`, `get_weather`, haber) **sabit Çince** `ActionResponse` döndürüp doğrudan TTS'e veriyor | `Intent.function_call.functions: []` — hepsi kapatıldı |
+| Cümle üç parçaya bölünüyor | `min_silence_duration_ms: 200` çok kısa | 800 |
+| Cevaplar 16-24 sn gecikiyor, **log'da hata yok** | Groq ücretsiz katmanı **8000 token/dakika**. 6528 karakterlik şablon × tur başına 3 çağrı = sınır aşımı → 429 → OpenAI SDK sessizce bekleyip yeniden deniyor | Şablonu Türkçe ve ~800 karaktere indir (`data/tr-prompt.txt`, `prompt_template` ile) → **1-2 sn** |
+| Gemini'de `429 RESOURCE_EXHAUSTED` | Ücretsiz katman `gemini-3.5-flash` için **günde 20 istek** | Groq'a geçildi. Gemini config'te yedek olarak duruyor |
+
+Model seçerken denenenler: `llama-3.3-70b` Türkçesi bozuk; `qwen3.6` cevaba `<think>` karıştırıyor;
+`groq/compound` (gömülü web aramalı) **araç çağırmayı desteklemiyor**, cihaz kontrolü giderdi.
+
+### Bilinen eksikler
+
+- **Canlı veri yok.** Web araması kapalı — açık olan tek seçenek Çin kaynaklarına bağlıydı.
+  Doğru yol: `data/.mcp_server_settings.json` ile kendi MCP aracımızı bağlamak.
+- **Yama kırılgan.** `patches/llm_openai.py` imajın içindeki dosyanın üzerine biniyor; imaj
+  güncellenirse yeniden üretilmeli (komut `docker-compose.yml` içinde yorumda).
+- Cihaz ev ağına bağımlı; dışarıdan erişim için Cloudflare Tunnel / Tailscale gerekir.
+- Sunucudaki API anahtarları `data/.config.yaml` içinde düz metin (chmod 600). **Depoya girmemeli.**
+
+Geri dönüş: WiFi portal → Advanced → `ota_url` alanını boşalt; cihaz `api.tenclass.net`'e döner.
