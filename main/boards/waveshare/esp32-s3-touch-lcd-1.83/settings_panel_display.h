@@ -286,7 +286,7 @@ private:
     // Sayfa 1 - Ayarlar
     // ------------------------------------------------------------------
     void BuildSettingsTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Ayarlar  1/4");
+        CreateHeader(tile, "Ayarlar  1/4      kapat");
 
         lv_obj_t* volume_row = CreateRow(tile);
         CreateLabel(volume_row, "Ses");
@@ -296,6 +296,7 @@ private:
         lv_obj_set_width(volume_slider_, lv_pct(100));
         lv_obj_set_height(volume_slider_, 10);
         lv_slider_set_range(volume_slider_, 0, 100);
+        lv_obj_add_flag(volume_slider_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(volume_slider_, VolumeEventCb, LV_EVENT_VALUE_CHANGED, this);
         lv_obj_add_event_cb(volume_slider_, VolumeEventCb, LV_EVENT_RELEASED, this);
 
@@ -307,12 +308,14 @@ private:
         lv_obj_set_width(brightness_slider_, lv_pct(100));
         lv_obj_set_height(brightness_slider_, 10);
         lv_slider_set_range(brightness_slider_, kMinBrightness, 100);
+        lv_obj_add_flag(brightness_slider_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(brightness_slider_, BrightnessEventCb, LV_EVENT_VALUE_CHANGED, this);
         lv_obj_add_event_cb(brightness_slider_, BrightnessEventCb, LV_EVENT_RELEASED, this);
 
         lv_obj_t* theme_row = CreateRow(tile);
         CreateLabel(theme_row, "Koyu tema");
         theme_switch_ = lv_switch_create(theme_row);
+        lv_obj_add_flag(theme_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(theme_switch_, ThemeEventCb, LV_EVENT_VALUE_CHANGED, this);
 
         close_button_ = CreateButton(tile, "Kapat", &close_button_label_);
@@ -323,7 +326,7 @@ private:
     // Sayfa 2 - Bilgi
     // ------------------------------------------------------------------
     void BuildInfoTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Bilgi  2/4");
+        CreateHeader(tile, "Bilgi  2/4      kapat");
         info_battery_ = CreateInfoRow(tile, "Pil");
         info_wifi_ = CreateInfoRow(tile, "WiFi");
         info_ip_ = CreateInfoRow(tile, "IP");
@@ -342,7 +345,7 @@ private:
     // Sayfa 3 - Kisayollar
     // ------------------------------------------------------------------
     void BuildActionsTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Kisayollar  3/4");
+        CreateHeader(tile, "Kisayollar  3/4      kapat");
 
         chat_button_ = CreateButton(tile, "Sohbeti Baslat / Bitir", &chat_button_label_);
         lv_obj_add_event_cb(chat_button_, ChatEventCb, LV_EVENT_CLICKED, this);
@@ -374,7 +377,7 @@ private:
     // Sayfa 4 - WiFi
     // ------------------------------------------------------------------
     void BuildWifiTile(lv_obj_t* tile) {
-        CreateHeader(tile, "WiFi  4/4");
+        CreateHeader(tile, "WiFi  4/4      kapat");
 
         wifi_status_label_ = CreateLabel(tile, "-");
         lv_obj_set_width(wifi_status_label_, lv_pct(100));
@@ -419,6 +422,7 @@ private:
         lv_obj_set_width(button, lv_pct(100));
         lv_obj_set_height(button, 30);
         lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(index)));
+        lv_obj_add_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_t* label = lv_label_create(button);
         lv_label_set_text(label, text);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
@@ -458,19 +462,19 @@ private:
             "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
             "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
             "^", "z", "x", "c", "v", "b", "n", "m", "DEL", "\n",
-            "#+=", "SP", "X", "OK", ""};
+            "#+=", "SP", "Geri", "OK", ""};
         static const char* upper_map[] = {
             "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
             "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
             "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
             "^", "Z", "X", "C", "V", "B", "N", "M", "DEL", "\n",
-            "#+=", "SP", "X", "OK", ""};
+            "#+=", "SP", "Geri", "OK", ""};
         static const char* symbol_map[] = {
             "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
             "!", "@", "#", "$", "%", "&", "*", "(", ")", "\n",
             "-", "_", "+", "=", "/", ":", ";", ",", ".", "\n",
             "?", "'", "[", "]", "{", "}", "<", ">", "DEL", "\n",
-            "abc", "SP", "X", "OK", ""};
+            "abc", "SP", "Geri", "OK", ""};
         if (symbols) {
             return symbol_map;
         }
@@ -514,7 +518,7 @@ private:
         kb_upper_ = false;
         kb_symbols_ = false;
         lv_label_set_text(kb_title_, title);
-        lv_label_set_text(kb_field_, "");
+        lv_label_set_text(kb_field_, entering_ssid ? kb_ssid_.c_str() : kb_password_.c_str());
         lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(false, false));
         lv_obj_remove_flag(kb_overlay_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -529,6 +533,7 @@ private:
 
     // Sifre girisi (ikinci asama)
     void ShowPasswordKeyboard() {
+        kb_password_.clear();
         char title[80];
         snprintf(title, sizeof(title), "%s sifresi", kb_ssid_.c_str());
         OpenKeyboard(title, false);
@@ -563,8 +568,12 @@ private:
             lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(kb_upper_, kb_symbols_));
         } else if (key == "SP") {
             field += ' ';
-        } else if (key == "X") {
-            HideKeyboard();
+        } else if (key == "Geri") {
+            if (kb_entering_ssid_) {
+                HideKeyboard();          // ilk asama: klavyeden tamamen cik
+            } else {
+                OpenKeyboard("Ag adi", true);  // sifre asamasi: ag adina don
+            }
             return;
         } else if (key == "OK") {
             if (kb_entering_ssid_) {
@@ -602,7 +611,14 @@ private:
     // ------------------------------------------------------------------
     // Widget yardimcilari
     // ------------------------------------------------------------------
-    void CreateHeader(lv_obj_t* tile, const char* text) { CreateLabel(tile, text); }
+    // Baslik ayni zamanda kapatma dugmesi: yukari kaydirma hareketi her zaman
+    // isabet etmeyebiliyor, gorunur ve garantili bir cikis yolu kaliyor.
+    void CreateHeader(lv_obj_t* tile, const char* text) {
+        lv_obj_t* label = CreateLabel(tile, text);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(label, CloseEventCb, LV_EVENT_CLICKED, this);
+    }
 
     lv_obj_t* CreateLabel(lv_obj_t* parent, const char* text) {
         lv_obj_t* label = lv_label_create(parent);
@@ -626,6 +642,8 @@ private:
 
     lv_obj_t* CreateButton(lv_obj_t* parent, const char* text, lv_obj_t** out_label) {
         lv_obj_t* button = lv_button_create(parent);
+        // Yukari kaydirma paneli kapatabilsin diye hareket olayi ust nesneye iletilmeli.
+        lv_obj_add_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_width(button, lv_pct(100));
         lv_obj_set_height(button, 38);
         lv_obj_t* label = lv_label_create(button);
