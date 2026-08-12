@@ -15,6 +15,16 @@
 //   asagi kaydirma      -> panel acilir  (ust seride dokunmak da acar)
 //   yukari kaydirma     -> panel kapanir
 //   saga/sola kaydirma  -> sayfalar: Ayarlar / Bilgi / Kisayollar / WiFi
+//
+// WiFi sayfasinda ag TARAMASI YOK, bilerek. esp-wifi-connect bileseni her
+// WIFI_EVENT_SCAN_DONE olayinda HandleScanResult() calistirip
+// esp_wifi_scan_get_ap_records() cagiriyor; bu fonksiyon sonuclari kopyaladiktan
+// sonra listeyi serbest birakiyor. Kendi taramamizi baslatsak bile sonuclar biz
+// okumadan siliniyor (cihazda denendi: hep "Ag bulunamadi"). Olay isleyicileri
+// kayit sirasina gore calisiyor ve bilesen WiFi baslarken kaydoluyor, yani her
+// zaman bizden once. Sonuclari ondan once kapmak da otomatik baglanmayi bozardi
+// - bilesen o listeyi hangi kayitli aga baglanacagini secmek icin kullaniyor.
+// Cozum: ag adi da klavyeden elle yaziliyor.
 // ---------------------------------------------------------------------------
 
 #include "application.h"
@@ -29,12 +39,8 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <lvgl.h>
-#include <esp_wifi.h>
 #include <ssid_manager.h>
 #include <wifi_manager.h>
-
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 #include <cstdio>
 #include <functional>
@@ -143,17 +149,9 @@ private:
 
     // Sayfa 4 - WiFi
     lv_obj_t* wifi_status_label_ = nullptr;
-    lv_obj_t* wifi_scan_button_ = nullptr;
-    lv_obj_t* wifi_scan_button_label_ = nullptr;
+    lv_obj_t* wifi_add_button_ = nullptr;
+    lv_obj_t* wifi_add_button_label_ = nullptr;
     lv_obj_t* wifi_list_ = nullptr;
-    bool wifi_scanning_ = false;
-
-    struct ScanResult {
-        std::string ssid;
-        int rssi = 0;
-        bool encrypted = true;
-    };
-    std::vector<ScanResult> scan_results_;
 
     // Sifre klavyesi (LV_USE_KEYBOARD=n oldugu icin lv_buttonmatrix ile elde yapildi)
     lv_obj_t* kb_overlay_ = nullptr;
@@ -164,6 +162,7 @@ private:
     std::string kb_password_;
     bool kb_upper_ = false;
     bool kb_symbols_ = false;
+    bool kb_entering_ssid_ = false;  // once ag adi, sonra sifre
 
     // ------------------------------------------------------------------
     // Ust bar guvenli alan
@@ -374,8 +373,6 @@ private:
     // ------------------------------------------------------------------
     // Sayfa 4 - WiFi
     // ------------------------------------------------------------------
-    static constexpr int kMaxScanResults = 15;
-
     void BuildWifiTile(lv_obj_t* tile) {
         CreateHeader(tile, "WiFi  4/4");
 
@@ -383,9 +380,10 @@ private:
         lv_obj_set_width(wifi_status_label_, lv_pct(100));
         lv_label_set_long_mode(wifi_status_label_, LV_LABEL_LONG_DOT);
 
-        wifi_scan_button_ = CreateButton(tile, "Aglari Tara", &wifi_scan_button_label_);
-        lv_obj_set_height(wifi_scan_button_, 32);
-        lv_obj_add_event_cb(wifi_scan_button_, WifiScanEventCb, LV_EVENT_CLICKED, this);
+        // Tarama yok - bkz. asagidaki not. Ag adi elle yaziliyor.
+        wifi_add_button_ = CreateButton(tile, "Ag Ekle", &wifi_add_button_label_);
+        lv_obj_set_height(wifi_add_button_, 32);
+        lv_obj_add_event_cb(wifi_add_button_, AddNetworkEventCb, LV_EVENT_CLICKED, this);
 
         // Kayitli aglar ve tarama sonuclari buraya diziliyor. Icerik surekli
         // yeniden uretildigi icin buradaki etiketler plain_labels_ e EKLENMIYOR;
@@ -451,81 +449,6 @@ private:
         }
     }
 
-    void ShowScanResults() {
-        lv_obj_clean(wifi_list_);
-        if (scan_results_.empty()) {
-            AddListRow("Ag bulunamadi", -1, NoopEventCb, false);
-            return;
-        }
-        for (size_t i = 0; i < scan_results_.size(); i++) {
-            const auto& result = scan_results_[i];
-            char row[96];
-            snprintf(row, sizeof(row), "%s  %d dBm%s", result.ssid.c_str(), result.rssi,
-                     result.encrypted ? "" : "  (acik)");
-            AddListRow(row, static_cast<int>(i), ScanResultClickedCb, false);
-        }
-    }
-
-    void StartScan() {
-        if (wifi_scanning_) {
-            return;
-        }
-        wifi_scanning_ = true;
-        lv_label_set_text(wifi_scan_button_label_, "Taraniyor...");
-        xTaskCreate(WifiScanTask, "panel_wifi_scan", 4096, this, 2, nullptr);
-    }
-
-    void DoScan() {
-        std::vector<ScanResult> found;
-
-        wifi_scan_config_t cfg = {};
-        cfg.show_hidden = false;
-        cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-        cfg.scan_time.active.min = 100;
-        cfg.scan_time.active.max = 300;
-
-        // WiFi bileseni de arka planda kendi taramasini yapiyor; ayni anda iki
-        // tarama olamaz, o durumda ESP_ERR_WIFI_STATE doner. Bir kez bekleyip
-        // tekrar deniyoruz.
-        esp_err_t err = esp_wifi_scan_start(&cfg, true);
-        if (err == ESP_ERR_WIFI_STATE) {
-            vTaskDelay(pdMS_TO_TICKS(1500));
-            err = esp_wifi_scan_start(&cfg, true);
-        }
-
-        if (err == ESP_OK) {
-            uint16_t count = 0;
-            esp_wifi_scan_get_ap_num(&count);
-            if (count > kMaxScanResults) {
-                count = kMaxScanResults;
-            }
-            if (count > 0) {
-                std::vector<wifi_ap_record_t> records(count);
-                esp_wifi_scan_get_ap_records(&count, records.data());
-                for (uint16_t i = 0; i < count; i++) {
-                    std::string ssid(reinterpret_cast<const char*>(records[i].ssid));
-                    if (ssid.empty()) {
-                        continue;
-                    }
-                    ScanResult item;
-                    item.ssid = ssid;
-                    item.rssi = records[i].rssi;
-                    item.encrypted = records[i].authmode != WIFI_AUTH_OPEN;
-                    found.push_back(item);
-                }
-            }
-        } else {
-            ESP_LOGW("SettingsPanel", "WiFi scan failed: %s", esp_err_to_name(err));
-        }
-
-        // Bu bir FreeRTOS gorevi, LVGL gorevi degil - kilidi almak sart.
-        DisplayLockGuard lock(this);
-        scan_results_ = std::move(found);
-        wifi_scanning_ = false;
-        lv_label_set_text(wifi_scan_button_label_, "Aglari Tara");
-        ShowScanResults();
-    }
-
     // ------------------------------------------------------------------
     // Sifre klavyesi - LV_USE_KEYBOARD=n oldugu icin lv_buttonmatrix ile elde
     // ------------------------------------------------------------------
@@ -586,15 +509,29 @@ private:
         lv_obj_add_event_cb(kb_matrix_, KeyboardEventCb, LV_EVENT_VALUE_CHANGED, this);
     }
 
-    void ShowKeyboard(const std::string& ssid) {
-        kb_ssid_ = ssid;
-        kb_password_.clear();
+    void OpenKeyboard(const char* title, bool entering_ssid) {
+        kb_entering_ssid_ = entering_ssid;
         kb_upper_ = false;
         kb_symbols_ = false;
-        lv_label_set_text_fmt(kb_title_, "%s sifresi", ssid.c_str());
+        lv_label_set_text(kb_title_, title);
         lv_label_set_text(kb_field_, "");
         lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(false, false));
         lv_obj_remove_flag(kb_overlay_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Ag adi girisi (ilk asama)
+    void ShowSsidKeyboard() {
+        NotifyActivity();
+        kb_ssid_.clear();
+        kb_password_.clear();
+        OpenKeyboard("Ag adi", true);
+    }
+
+    // Sifre girisi (ikinci asama)
+    void ShowPasswordKeyboard() {
+        char title[80];
+        snprintf(title, sizeof(title), "%s sifresi", kb_ssid_.c_str());
+        OpenKeyboard(title, false);
     }
 
     void HideKeyboard() {
@@ -612,9 +549,11 @@ private:
         NotifyActivity();
         std::string key(text);
 
+        std::string& field = kb_entering_ssid_ ? kb_ssid_ : kb_password_;
+
         if (key == "DEL") {
-            if (!kb_password_.empty()) {
-                kb_password_.pop_back();
+            if (!field.empty()) {
+                field.pop_back();
             }
         } else if (key == "^") {
             kb_upper_ = !kb_upper_;
@@ -623,17 +562,24 @@ private:
             kb_symbols_ = !kb_symbols_;
             lv_buttonmatrix_set_map(kb_matrix_, KeyboardMap(kb_upper_, kb_symbols_));
         } else if (key == "SP") {
-            kb_password_ += ' ';
+            field += ' ';
         } else if (key == "X") {
             HideKeyboard();
             return;
         } else if (key == "OK") {
-            SaveNetwork();
+            if (kb_entering_ssid_) {
+                if (kb_ssid_.empty()) {
+                    return;  // bos ag adiyla ilerleme
+                }
+                ShowPasswordKeyboard();
+            } else {
+                SaveNetwork();
+            }
             return;
         } else {
-            kb_password_ += key;
+            field += key;
         }
-        lv_label_set_text(kb_field_, kb_password_.c_str());
+        lv_label_set_text(kb_field_, field.c_str());
     }
 
     void SaveNetwork() {
@@ -726,7 +672,7 @@ private:
                     theme->text_color());
         StyleButton(chat_button_, chat_button_label_, theme->chat_background_color(),
                     theme->text_color());
-        StyleButton(wifi_scan_button_, wifi_scan_button_label_, theme->chat_background_color(),
+        StyleButton(wifi_add_button_, wifi_add_button_label_, theme->chat_background_color(),
                     theme->text_color());
         if (kb_overlay_ != nullptr) {
             lv_obj_set_style_bg_opa(kb_overlay_, LV_OPA_COVER, 0);
@@ -997,28 +943,13 @@ private:
     static void ThemeEventCb(lv_event_t* e) { Self(e)->OnThemeEvent(); }
     static void ChatEventCb(lv_event_t* e) { Self(e)->OnChatButton(); }
 
-    static void WifiScanEventCb(lv_event_t* e) { Self(e)->StartScan(); }
+    static void AddNetworkEventCb(lv_event_t* e) { Self(e)->ShowSsidKeyboard(); }
     static void KeyboardEventCb(lv_event_t* e) { Self(e)->OnKeyPressed(); }
     static void NoopEventCb(lv_event_t* e) { (void)e; }
-
-    static void WifiScanTask(void* arg) {
-        static_cast<SettingsPanelDisplay*>(arg)->DoScan();
-        vTaskDelete(nullptr);
-    }
 
     static int RowIndex(lv_event_t* e) {
         auto* obj = static_cast<lv_obj_t*>(lv_event_get_target(e));
         return static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(obj)));
-    }
-
-    static void ScanResultClickedCb(lv_event_t* e) {
-        auto* self = Self(e);
-        int index = RowIndex(e);
-        if (index < 0 || index >= static_cast<int>(self->scan_results_.size())) {
-            return;
-        }
-        self->NotifyActivity();
-        self->ShowKeyboard(self->scan_results_[index].ssid);
     }
 
     static void SavedNetworkClickedCb(lv_event_t* e) {
