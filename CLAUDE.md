@@ -303,10 +303,29 @@ Hepsi cihazda "şu an bir sorun var" olarak görünüyordu; log'a bakmadan ayır
 Model seçerken denenenler: `llama-3.3-70b` Türkçesi bozuk; `qwen3.6` cevaba `<think>` karıştırıyor;
 `groq/compound` (gömülü web aramalı) **araç çağırmayı desteklemiyor**, cihaz kontrolü giderdi.
 
-### Bilinen eksikler
+### Canlı veri — MCP arama servisi ✅ (12 Ağu 2026)
 
-- **Canlı veri yok.** Web araması kapalı — açık olan tek seçenek Çin kaynaklarına bağlıydı.
-  Doğru yol: `data/.mcp_server_settings.json` ile kendi MCP aracımızı bağlamak.
+İkinci bir konteyner: `~/xiaozhi-mcp-search/` (compose'a `mcp-search` servisi olarak eklendi).
+`web_search` adlı tek bir MCP aracı sunuyor; içeride **Gemini'nin yerleşik Google araması**
+(`tools:[{google_search:{}}]`) çağrılıyor ve sonuç sesli okunmaya uygun biçimde dönüyor.
+xiaozhi'ye `data/.mcp_server_settings.json` ile tanıtıldı (`http://mcp-search:8100/mcp`,
+`streamable-http`; iki konteyner aynı compose ağında).
+
+Cihazda doğrulandı: *"Beşiktaş maçı ne zaman?"* → doğru tarih ve saat. Arama turu **~9 sn**
+(normal sohbet 1-2 sn); o sırada cihaz sessiz.
+
+Neden ayrı servis — bunlar test edildi:
+
+- Gemini'nin `google_search`'ü **sadece kendi API'sinden** çalışıyor. Sunucunun kullandığı
+  OpenAI-uyumlu uç reddediyor: `Unknown name "tools" at 'extra_body.google'`.
+- Yerleşik araç + fonksiyon çağırma **birlikte** kullanılabiliyor ama
+  `tool_config.include_server_side_tool_invocations: true` şart.
+- Grounding **ücretsiz katmanda yok**, ödemeli katman gerekiyor: ayda 5000 arama ücretsiz,
+  sonrası $14/1000. Sohbet Groq'ta (ücretsiz) kaldığı için para sadece arama yapılınca harcanıyor.
+- `mcp` paketi 2.0'da `mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer` oldu; API aynı.
+- xiaozhi konteynerinde **curl yok**, hata ayıklarken `python` + `httpx` kullan.
+
+### Bilinen eksikler
 - **Yama kırılgan.** `patches/llm_openai.py` imajın içindeki dosyanın üzerine biniyor; imaj
   güncellenirse yeniden üretilmeli (komut `docker-compose.yml` içinde yorumda).
 - Cihaz ev ağına bağımlı; dışarıdan erişim için Cloudflare Tunnel / Tailscale gerekir.
