@@ -122,8 +122,8 @@ artifact: xiaozhi-1.83-turkce-pwrbutton → build/merged-binary.bin
 
 **`pwr-button` dalına her push otomatik derleme tetikler.** Süre ~5-6 dakika.
 
-Kullanıcı artifact'ı Actions sekmesinden indirir ve cihaza kendisi yükler.
-Ajan cihaza erişemez — **flash adımını asla "yapıldı" diye varsayma, kullanıcıya sor.**
+Artifact'ı **ajan indirir ve cihaza yükler** (bkz. §9 kural 4): `gh run download <id>`.
+Cihazda **test etmek** kullanıcıda — ekranı göremezsin, "çalışıyor" deme.
 
 ### `scripts/build.py` faydalı seçenekler
 
