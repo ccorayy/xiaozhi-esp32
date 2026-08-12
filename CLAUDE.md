@@ -34,6 +34,14 @@ Upstream'e PR göndermek gibi bir hedef yok; değişiklikler kişisel kullanım 
 | Diğer | QMI8658 IMU, PCF85063 RTC, microSD yuvası, USB-C |
 | USB | Native **USB-Serial/JTAG** (`303a:1001`), köprü çip yok |
 
+### Üretici kaynakları
+
+`waveshareteam/ESP32-S3-Touch-LCD-1.83` (GitHub) — şema, fabrika firmware'i ve örnekler:
+`01_AXP2101` (güç/pil), `02_lvgl_demo_v9`, `03_esp-brookesia` (ürün fotoğraflarındaki renkli
+telefon-benzeri arayüz; ayrı firmware, xiaozhi'ye takılamaz), `04_Immersive_block` (IMU),
+`05_Spec_Analyzer` (ses spektrumu), `06_videoplayer` (SD'den video).
+BSP bileşeni: `waveshare/esp32_s3_touch_lcd_1_83` — SD pinleri buradan doğrulandı.
+
 ### Pinler (`config.h`'dan, doğrulanmış)
 
 ```
@@ -217,9 +225,12 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
    çağrılacak; bileşen de arka planda kendi taramasını yapıyor, çakışma hatasını yakala.
 3. **Özel emoji/yüz seti** — `78/xiaozhi-assets-generator` (tarayıcıda çalışır), 21 ifade, 240×284. OTA ile iner, flash gerekmez, kod değişikliği yok.
 4. **Kullanılmayan çipler** — kartta **QMI8658 IMU** ve **PCF85063 RTC** var, `main/` ağacında
-   sürücüleri **yok** (tek referans başka bir board'un `pin_config.h`'si). Sıfırdan I2C sürücüsü
-   yazmak gerekir. IMU > RTC: eline alınca uyandırma, ters çevirince sessize alma.
+   sürücüleri **yok**. Ama sıfırdan yazmaya gerek olmayabilir: **Waveshare'in resmi örnek deposu**
+   `waveshareteam/ESP32-S3-Touch-LCD-1.83` içinde `examples/esp-idf/04_Immersive_block`
+   *"Motion-driven interactive demo"* — yani IMU bu kartta çalışıyor ve referans kod hazır.
+   IMU > RTC: eline alınca uyandırma, ters çevirince sessize alma.
 5. **microSD** — ✅ mount çalışıyor. Sıradaki soru **ne için kullanılacağı**:
+   (Waveshare örnek deposundaki `06_videoplayer` SD'den video oynatıyor — referans kod.)
    - *Görsel/animasyon SD'den:* LVGL'in dosya sistemi sürücüleri (`LV_USE_FS_POSIX` vb.) sdkconfig'de
      **kapalı**, ama `lv_fs_drv_register()` çekirdek API — sürücüyü kendi header'ımızda kayıt
      edebiliriz, sdkconfig'e dokunmadan. `LV_USE_LODEPNG=y` olduğu için PNG çözülüyor.
