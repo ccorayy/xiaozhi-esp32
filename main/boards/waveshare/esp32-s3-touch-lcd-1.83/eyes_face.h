@@ -36,7 +36,6 @@ public:
     static constexpr int kEyeGap = 100;  // iki goz merkezi arasi
     static constexpr int kEyeY = -6;     // merkeze gore dikey kayma
     static constexpr int kIdleSeconds = 15;
-    static constexpr int kClockScale = 2;  // 30 px font x2
 
     void Create(lv_obj_t* parent, LvglTheme* theme) {
         theme_ = theme;
@@ -330,13 +329,15 @@ private:
         clock_time_ = lv_label_create(clock_);
         lv_label_set_text(clock_time_, "--:--");
         lv_obj_set_style_text_font(clock_time_, &font_noto_sans_basic_30_4, 0);
-        // 30 px font olcekleniyor; 256 = 1x
-        lv_obj_set_style_transform_scale(clock_time_, 256 * kClockScale, 0);
-        lv_obj_align(clock_time_, LV_ALIGN_CENTER, 0, -10);
+        // NOT: Burada transform_scale ile 2 kat buyutmustuk; cihazda saat HIC
+        // gorunmedi (gozler gizleniyordu ama yerine bir sey cizilmiyordu).
+        // LVGL olcekli nesneyi ayri bir katmana ciziyor ve katman olusmazsa
+        // nesne tamamen kayboluyor. Olcekleme yok, 30 px font oldugu gibi.
+        lv_obj_align(clock_time_, LV_ALIGN_CENTER, 0, -14);
 
         clock_date_ = lv_label_create(clock_);
         lv_label_set_text(clock_date_, "");
-        lv_obj_align(clock_date_, LV_ALIGN_CENTER, 0, 42);
+        lv_obj_align(clock_date_, LV_ALIGN_CENTER, 0, 24);
     }
 
     void ShowClock(bool on) {
@@ -354,7 +355,10 @@ private:
     void UpdateClock() {
         time_t now = time(nullptr);
         struct tm* t = localtime(&now);
-        if (t == nullptr) {
+        if (t == nullptr || t->tm_year + 1900 < 2024) {
+            // Saat sunucudan gelmemis; bos ekran yerine durumu goster
+            lv_label_set_text(clock_time_, "--:--");
+            lv_label_set_text(clock_date_, "saat alinamadi");
             return;
         }
         char buf[16];
