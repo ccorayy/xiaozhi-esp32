@@ -17,6 +17,7 @@
 
 #include "lvgl_theme.h"
 
+#include <esp_log.h>
 #include <esp_timer.h>
 #include <lvgl.h>
 
@@ -120,6 +121,16 @@ public:
             return;
         }
         int64_t idle_s = (esp_timer_get_time() - last_activity_us_) / 1000000;
+
+        // TESHIS: saat neden cikmiyor sorusu icin gecici. Sorun cozulunce sil.
+        if (idle_s % 5 == 0 && idle_s != last_logged_idle_) {
+            last_logged_idle_ = idle_s;
+            time_t now = time(nullptr);
+            struct tm* t = localtime(&now);
+            ESP_LOGI("EyesFace", "bosta=%llds saat_acik=%d yil=%d",
+                     (long long)idle_s, clock_visible_ ? 1 : 0,
+                     t != nullptr ? t->tm_year + 1900 : -1);
+        }
 
         if (!clock_visible_ && idle_s >= kIdleSeconds) {
             ShowClock(true);
@@ -342,6 +353,8 @@ private:
 
     void ShowClock(bool on) {
         clock_visible_ = on;
+        ESP_LOGI("EyesFace", "ShowClock(%d) - clock_=%p time_lbl=%p", on ? 1 : 0,
+                 (void*)clock_, (void*)clock_time_);
         if (on) {
             UpdateClock();
             lv_obj_add_flag(eyes_, LV_OBJ_FLAG_HIDDEN);
@@ -364,6 +377,8 @@ private:
         char buf[16];
         strftime(buf, sizeof(buf), "%H:%M", t);
         lv_label_set_text(clock_time_, buf);
+        ESP_LOGI("EyesFace", "saat=%s gorunur=%d", buf,
+                 lv_obj_has_flag(clock_, LV_OBJ_FLAG_HIDDEN) ? 0 : 1);
 
         static const char* gunler[] = {"Pazar",    "Pazartesi", "Sali", "Carsamba",
                                        "Persembe", "Cuma",      "Cumartesi"};
@@ -389,4 +404,5 @@ private:
     bool clock_visible_ = false;
     int tick_count_ = 0;
     int next_blink_ = 4;
+    int64_t last_logged_idle_ = -1;
 };
