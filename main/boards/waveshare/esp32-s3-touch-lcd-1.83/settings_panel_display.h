@@ -45,6 +45,7 @@
 #include <wifi_manager.h>
 
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <initializer_list>
 #include <string>
@@ -105,7 +106,15 @@ public:
 
     virtual void SetStatus(const char* status) override {
         SpiLcdDisplay::SetStatus(status);
-        eyes_.NotifyActivity();
+        // DIKKAT: LvglDisplay::UpdateStatusBar her 10 saniyede bir ust cubuktaki
+        // saati yazmak icin SetStatus("HH:MM") cagiriyor. Bunu kullanici
+        // etkilesimi sayarsak bosta sayaci 15 saniyeye hic ulasamiyor ve saat
+        // ekrani hic acilmiyor (cihazda olculdu: sayac 0-5-10-0-5-10...).
+        // Saat bicimindeki cagrilari yok sayiyoruz.
+        bool is_clock_tick = status != nullptr && strlen(status) == 5 && status[2] == ':';
+        if (!is_clock_tick) {
+            eyes_.NotifyActivity();
+        }
     }
 
 private:
