@@ -162,7 +162,21 @@ Sonuç: sadece firmware yazılırsa cihaz **yeni bir `board/uuid` üretir** ve x
 .\esptool.exe -p COM8 write-flash 0x9000 nvs-only.bin
 ```
 
-`nvs-only.bin` = kullanıcının 64KB kritik yedeğinin `0x9000..0xCFFF` aralığı (16384 byte).
+`nvs-only.bin` = cihazın **güncel** NVS'i (16384 byte).
+
+> ⚠️ **Flash'tan önce NVS'i cihazdan taze oku.** Eski bir yedeği geri yazmak, kullanıcının
+> o yedekten sonra yaptığı ayarları siler. Bu bir kez yaşandı: `ota_url` (kendi sunucusu)
+> her flash'ta silinip cihaz Çin'e dönüyordu, üstelik sessizce — sadece "Çin sürümü açıldı"
+> olarak fark edildi. Doğru sıra:
+>
+> ```powershell
+> .\esptool.exe -p COM8 read-flash 0x9000 0x4000 nvs-only.bin   # ÖNCE oku
+> .\esptool.exe -p COM8 write-flash 0x0    merged-binary.bin
+> .\esptool.exe -p COM8 write-flash 0x9000 nvs-only.bin          # sonra geri yaz
+> ```
+>
+> Okunan dosyada `ota_url`, `keenetic`, SSID ve `board/uuid` dizgilerinin bulunduğunu
+> doğrula (ASCII araması yeter). `nvs-eski-2026-08-11.bin` ilk yedek, dokunma.
 
 > **NVS'te `Get-FileHash` karşılaştırması yapma.** NVS log yapılı bir depodur, cihaz her
 > açılışta içine yazar. Doğru yedek geri yazılsa bile hash tutmaz. Doğrulama için
