@@ -12,6 +12,7 @@
 // birbirimizin ayagina basmiyoruz.
 //
 //   ekrana dokunma      -> sohbeti baslat/bitir (boot butonuyla ayni is)
+//   bosta 15 sn         -> gozler yerini saate birakir, dokununca geri gelir
 //   asagi kaydirma      -> panel acilir  (ust seride dokunmak da acar)
 //   yukari kaydirma     -> panel kapanir
 //   saga/sola kaydirma  -> sayfalar: Ayarlar / Bilgi / Kisayollar / WiFi
@@ -28,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 #include "application.h"
+#include "eyes_face.h"
 #include "audio_codec.h"
 #include "backlight.h"
 #include "board.h"
@@ -74,6 +76,7 @@ public:
 
         DisplayLockGuard lock(this);
         ApplySafeAreaInsets();
+        CreateFace();
         CreatePanel();
     }
 
@@ -82,7 +85,27 @@ public:
 
         DisplayLockGuard lock(this);
         ApplySafeAreaInsets();
+        eyes_.ApplyTheme(static_cast<LvglTheme*>(current_theme_));
         StylePanel();
+    }
+
+    // Emoji yerine gozler: ustteki SetEmotion emoji resmi ariyor, biz onu hic
+    // cagirmiyoruz. Diger iki metot uste devrediliyor, sadece bosta sayacini
+    // sifirlamak icin araya giriyoruz.
+    virtual void SetEmotion(const char* emotion) override {
+        DisplayLockGuard lock(this);
+        eyes_.SetExpression(emotion);
+        eyes_.NotifyActivity();
+    }
+
+    virtual void SetChatMessage(const char* role, const char* content) override {
+        SpiLcdDisplay::SetChatMessage(role, content);
+        eyes_.NotifyActivity();
+    }
+
+    virtual void SetStatus(const char* status) override {
+        SpiLcdDisplay::SetStatus(status);
+        eyes_.NotifyActivity();
     }
 
 private:
@@ -94,6 +117,7 @@ private:
     static constexpr int kOpenStripHeight = 28;
     static constexpr int kConfirmTimeoutMs = 5000;
     static constexpr int kInfoRefreshMs = 2000;
+    static constexpr int kFaceTickMs = 1000;  // saat ve goz kirpma icin
     static constexpr int kMinBrightness = 5;  // 0 = ekran tamamen kapanir, kilitlenmeyelim
 
     // Iki asamali onay isteyen butonlar (WiFi ayari, yeniden baslatma).
@@ -107,6 +131,9 @@ private:
         bool pending = false;
         lv_timer_t* timer = nullptr;
     };
+
+    EyesFace eyes_;
+    lv_timer_t* face_timer_ = nullptr;
 
     lv_obj_t* panel_ = nullptr;
     lv_obj_t* pager_ = nullptr;
@@ -178,6 +205,18 @@ private:
         if (status_bar_ != nullptr) {
             lv_obj_set_style_pad_top(status_bar_, kSafeInsetTop, 0);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Yuz (gozler + bosta saat)
+    // ------------------------------------------------------------------
+    void CreateFace() {
+        // Upstream'in emoji kutusu gizleniyor; yerine gozleri koyuyoruz.
+        if (emoji_box_ != nullptr) {
+            lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
+        eyes_.Create(lv_screen_active(), static_cast<LvglTheme*>(current_theme_));
+        face_timer_ = lv_timer_create(FaceTimerCb, kFaceTickMs, this);
     }
 
     // ------------------------------------------------------------------
@@ -744,6 +783,7 @@ private:
         RefreshInfo();
         RefreshWifiStatus();
         ShowSavedNetworks();
+        eyes_.SetHidden(true);
         lv_obj_remove_flag(panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
         NotifyActivity();
@@ -758,6 +798,8 @@ private:
         ResetConfirm(restart_confirm_);
         lv_obj_add_flag(panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
+        eyes_.SetHidden(false);
+        eyes_.NotifyActivity();
         NotifyActivity();
     }
 
@@ -952,7 +994,11 @@ private:
     }
 
     static void GestureEventCb(lv_event_t* e) { Self(e)->OnGesture(); }
-    static void PressedEventCb(lv_event_t* e) { Self(e)->gesture_handled_ = false; }
+    static void PressedEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->gesture_handled_ = false;
+        self->eyes_.NotifyActivity();
+    }
     static void ScreenClickedEventCb(lv_event_t* e) { Self(e)->OnScreenClicked(); }
     static void OpenEventCb(lv_event_t* e) { Self(e)->OpenPanel(); }
     static void CloseEventCb(lv_event_t* e) { Self(e)->ClosePanel(); }
@@ -1004,6 +1050,10 @@ private:
         // Tek atimlik timer kendini siliyor; elimizdeki isaretciyi once dusurelim.
         confirm->timer = nullptr;
         confirm->owner->ResetConfirm(*confirm);
+    }
+
+    static void FaceTimerCb(lv_timer_t* timer) {
+        static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer))->eyes_.Tick();
     }
 
     static void InfoTimerCb(lv_timer_t* timer) {
