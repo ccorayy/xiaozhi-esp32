@@ -266,10 +266,13 @@ private:
     // baglanana kadar cihaz 1970'te oluyor ve saat ekrani/alarm calismiyor.
     // Kartta pil yedekli RTC var; acilista ondan okuyup sistemi kuruyoruz,
     // sunucu saati geldikten sonra da RTC'yi guncelliyoruz.
-    static constexpr int kRtcSyncIntervalMs = 5 * 60 * 1000;
+    // Dakikada bir: yedi register yazmak bedava sayilir, karsiliginda fisi
+    // cekilen cihaz saati en fazla bir dakika geride uyanir.
+    static constexpr int kRtcSyncIntervalMs = 60 * 1000;
 
     Pcf85063* rtc_ = nullptr;
     esp_timer_handle_t rtc_timer_ = nullptr;
+    bool rtc_written_ = false;
 
     static bool SystemTimeValid() {
         time_t now = time(nullptr);
@@ -293,7 +296,13 @@ private:
         }
 
         struct tm t = {};
-        if (!SystemTimeValid() && rtc_->ReadTime(t)) {
+        if (SystemTimeValid()) {
+            ESP_LOGI(TAG, "RTC bulundu, sistem saati zaten gecerli");
+        } else if (!rtc_->ReadTime(t)) {
+            // Ilk acilista beklenen durum: osilator hic calismamis, icindeki
+            // zaman anlamsiz. Ilk gecerli sistem saatinde doldurulacak.
+            ESP_LOGI(TAG, "RTC bulundu ama saati gecersiz");
+        } else {
             // ota.cc sistem saatini zaten yerel saate ayarliyor (timezone_offset
             // ekleyerek), RTC'ye de oyle yazdik; donusum gerekmiyor.
             struct timeval tv = {};
@@ -323,6 +332,11 @@ private:
         struct tm t = {};
         localtime_r(&now, &t);
         rtc_->WriteTime(t);
+        if (!rtc_written_) {
+            rtc_written_ = true;
+            ESP_LOGI(TAG, "RTC kuruldu: %04d-%02d-%02d %02d:%02d:%02d", t.tm_year + 1900,
+                     t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+        }
     }
 
     // ------------------------------------------------------------------
