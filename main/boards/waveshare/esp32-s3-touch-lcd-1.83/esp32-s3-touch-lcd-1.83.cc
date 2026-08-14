@@ -65,6 +65,7 @@ private:
     Button boot_button_;
     Button pwr_button_;
     Display* display_;
+    SettingsPanelDisplay* panel_display_ = nullptr;
     PowerSaveTimer* power_save_timer_;
     sdmmc_card_t* sd_card_ = nullptr;
     std::string sd_status_ = "kapali";
@@ -283,6 +284,7 @@ private:
             }
         });
         settings_display->SetSdInfoProvider([this]() { return sd_status_; });
+        panel_display_ = settings_display;
         display_ = settings_display;
     }
 
@@ -326,6 +328,29 @@ private:
     // 初始化工具
     void InitializeTools() {
         auto &mcp_server = McpServer::GetInstance();
+        // Sesle arayuz kontrolu: "menuyu ac", "saati goster", "ayarlara gec".
+        // Cihaz kendi ekranini kontrol edebildigini bilsin diye acikca tanitiyoruz.
+        mcp_server.AddTool("self.ui.open_app",
+            "Open a screen on the device display. "
+            "Valid values for `app`: menu, chat, clock, settings, wifi, info.
+"
+            "Use this when the user asks to show or open something on the screen.",
+            PropertyList({
+                Property("app", kPropertyTypeString)
+            }), [this](const PropertyList& properties) -> ReturnValue {
+                auto app = properties["app"].value<std::string>();
+                if (panel_display_ == nullptr) {
+                    return false;
+                }
+                return panel_display_->OpenApp(app);
+            });
+
+        mcp_server.AddTool("self.ui.get_current_app",
+            "Returns which screen the device is currently showing.",
+            PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
+                return panel_display_ != nullptr ? panel_display_->CurrentApp() : std::string("unknown");
+            });
+
         mcp_server.AddTool("self.system.reconfigure_wifi",
             "End this conversation and enter WiFi configuration mode.\n"
             "**CAUTION** You must ask the user to confirm this action.",

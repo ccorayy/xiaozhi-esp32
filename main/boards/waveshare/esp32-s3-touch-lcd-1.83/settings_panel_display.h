@@ -65,6 +65,10 @@
 
 class SettingsPanelDisplay : public SpiLcdDisplay {
 public:
+    // Hangi ekrandayiz. kChat ve kClock kabugu gizler (altta gozler/saat kalir),
+    // digerleri kabuk uzerinde tam ekran acilir.
+    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions };
+
     SettingsPanelDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                          int width, int height, int offset_x, int offset_y, bool mirror_x,
                          bool mirror_y, bool swap_xy)
@@ -82,6 +86,43 @@ public:
     // SD kart durumunu board saglar; bu sinif SDMMC'yi tanimaz.
     void SetSdInfoProvider(std::function<std::string()> provider) {
         sd_info_provider_ = std::move(provider);
+    }
+
+    // Sesle arayuz kontrolu icin disari acilan kapi (board'daki MCP araci cagirir).
+    // Baska bir gorevden gelir, o yuzden LVGL kilidini burada aliyoruz.
+    bool OpenApp(const std::string& name) {
+        View target;
+        if (name == "menu" || name == "menü") {
+            target = View::kLauncher;
+        } else if (name == "chat" || name == "sohbet") {
+            target = View::kChat;
+        } else if (name == "clock" || name == "saat") {
+            target = View::kClock;
+        } else if (name == "settings" || name == "ayarlar") {
+            target = View::kSettings;
+        } else if (name == "wifi") {
+            target = View::kWifi;
+        } else if (name == "info" || name == "bilgi") {
+            target = View::kInfo;
+        } else {
+            return false;
+        }
+        DisplayLockGuard lock(this);
+        ShowView(target);
+        return true;
+    }
+
+    std::string CurrentApp() const {
+        switch (current_view_) {
+            case View::kChat: return "chat";
+            case View::kClock: return "clock";
+            case View::kLauncher: return "menu";
+            case View::kSettings: return "settings";
+            case View::kWifi: return "wifi";
+            case View::kInfo: return "info";
+            case View::kActions: return "shortcuts";
+        }
+        return "unknown";
     }
 
     virtual void SetupUI() override {
@@ -158,11 +199,7 @@ private:
         lv_timer_t* timer = nullptr;
     };
 
-    // Hangi ekrandayiz. kChat ve kClock kabugu gizler (altta gozler/saat kalir),
-    // digerleri kabuk uzerinde tam ekran acilir.
-    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions };
     View current_view_ = View::kLauncher;
-
     EyesFace eyes_;
     lv_timer_t* face_timer_ = nullptr;
     lv_obj_t* launcher_ = nullptr;
