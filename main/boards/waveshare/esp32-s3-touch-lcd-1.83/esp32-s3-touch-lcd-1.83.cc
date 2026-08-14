@@ -29,10 +29,13 @@
 #include <driver/sdmmc_host.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <sys/time.h>
+#include <vector>
 
 #define TAG "WaveshareEsp32s3TouchLCD1inch83"
 
@@ -202,6 +205,42 @@ private:
         sd_server_.Stop();
         EnterWifiConfigMode();
     }
+
+    // Galeri sayfasi icin: kartin kok dizinindeki gorseller, ada gore sirali.
+    std::vector<std::string> SdImageList() {
+        std::vector<std::string> files;
+        if (sd_card_ == nullptr) {
+            return files;
+        }
+        DIR* dir = opendir(SD_MOUNT_POINT);
+        if (dir == nullptr) {
+            return files;
+        }
+        struct dirent* entry = nullptr;
+        while ((entry = readdir(dir)) != nullptr && files.size() < kMaxGalleryFiles) {
+            if (entry->d_name[0] == '.') {
+                continue;
+            }
+            std::string name = entry->d_name;
+            auto dot = name.rfind('.');
+            if (dot == std::string::npos) {
+                continue;
+            }
+            std::string ext = name.substr(dot + 1);
+            for (auto& c : ext) {
+                c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            }
+            // Derlenmis cozucular: LODEPNG ve TJPGD (bkz. config.json).
+            if (ext == "png" || ext == "jpg" || ext == "jpeg") {
+                files.push_back(name);
+            }
+        }
+        closedir(dir);
+        std::sort(files.begin(), files.end());
+        return files;
+    }
+
+    static constexpr size_t kMaxGalleryFiles = 40;
 
     int SdFileCount() {
         if (sd_card_ == nullptr) {
@@ -663,6 +702,7 @@ private:
         sd_hooks.server_running = [this]() { return sd_server_.running(); };
         sd_hooks.set_server = [this](bool on) { SetSdServerEnabled(on); };
         sd_hooks.server_url = [this]() { return WifiManager::GetInstance().GetIpAddress(); };
+        sd_hooks.list_images = [this]() { return SdImageList(); };
         settings_display->SetSdHooks(std::move(sd_hooks));
 
         panel_display_ = settings_display;

@@ -69,7 +69,9 @@ class SettingsPanelDisplay : public SpiLcdDisplay {
 public:
     // Hangi ekrandayiz. kChat ve kClock kabugu gizler (altta gozler/saat kalir),
     // digerleri kabuk uzerinde tam ekran acilir.
-    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions, kAlarm, kSd };
+    // kPhoto menude yok; galeriden bir dosyaya dokununca aciliyor.
+    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions, kAlarm, kSd,
+                      kGallery, kPhoto };
 
     // SD kart islerini board yapar; bu sinif ne SDMMC'yi ne de httpd'yi tanir.
     struct SdHooks {
@@ -79,6 +81,7 @@ public:
         std::function<bool()> server_running;
         std::function<void(bool)> set_server;
         std::function<std::string()> server_url;      // "192.168.1.42"
+        std::function<std::vector<std::string>()> list_images;
     };
 
     SettingsPanelDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -154,6 +157,8 @@ public:
             target = View::kAlarm;
         } else if (name == "sd" || name == "files" || name == "dosyalar") {
             target = View::kSd;
+        } else if (name == "gallery" || name == "galeri" || name == "photos") {
+            target = View::kGallery;
         } else {
             return false;
         }
@@ -173,6 +178,8 @@ public:
             case View::kActions: return "shortcuts";
             case View::kAlarm: return "alarm";
             case View::kSd: return "sd";
+            case View::kGallery: return "gallery";
+            case View::kPhoto: return "photo";
         }
         return "unknown";
     }
@@ -268,6 +275,8 @@ private:
     lv_obj_t* view_actions_ = nullptr;
     lv_obj_t* view_alarm_ = nullptr;
     lv_obj_t* view_sd_ = nullptr;
+    lv_obj_t* view_gallery_ = nullptr;
+    lv_obj_t* view_photo_ = nullptr;
 
     lv_obj_t* panel_ = nullptr;
     lv_obj_t* open_strip_ = nullptr;
@@ -320,6 +329,14 @@ private:
     lv_obj_t* sd_files_ = nullptr;
     lv_obj_t* sd_server_switch_ = nullptr;
     lv_obj_t* sd_url_ = nullptr;
+
+    // Sayfa 7 - Galeri
+    lv_obj_t* gallery_list_ = nullptr;
+    lv_obj_t* gallery_hint_ = nullptr;
+    lv_obj_t* photo_image_ = nullptr;
+    lv_obj_t* photo_note_ = nullptr;
+    std::vector<std::string> gallery_files_;
+    std::string photo_path_;  // "S:/foo.jpg" - lv_image kaynagi isaretciyi tutuyor
 
     // Tema degisiminde yeniden renklendirilecek duz yazi etiketleri.
     std::vector<lv_obj_t*> plain_labels_;
@@ -427,6 +444,10 @@ private:
         LoadAlarm();
         view_sd_ = CreateAppView("SD Kart");
         BuildSdTile(view_sd_);
+        view_gallery_ = CreateAppView("Galeri");
+        BuildGalleryTile(view_gallery_);
+        view_photo_ = CreateAppView("Gorsel");
+        BuildPhotoTile(view_photo_);
 
         BuildKeyboard();
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
@@ -542,6 +563,7 @@ private:
             {MATERIAL_SYMBOLS_INFO, "Bilgi", 0xBF5AF2, View::kInfo},
             {MATERIAL_SYMBOLS_ALARM, "Alarm", 0xFFD60A, View::kAlarm},
             {MATERIAL_SYMBOLS_SD_CARD, "SD Kart", 0x64D2FF, View::kSd},
+            {MATERIAL_SYMBOLS_IMAGE, "Galeri", 0x5E5CE6, View::kGallery},
             {MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "Kisayol", 0xFF453A, View::kActions},
         };
         for (const auto& app : apps) {
@@ -664,6 +686,131 @@ private:
         confirm.action = std::move(action);
         confirm.button = CreateButton(tile, idle_text, &confirm.label);
         lv_obj_add_event_cb(confirm.button, ConfirmEventCb, LV_EVENT_CLICKED, &confirm);
+    }
+
+    // ------------------------------------------------------------------
+    // Sayfa 7 - Galeri (SD karttaki gorseller)
+    // ------------------------------------------------------------------
+    // LVGL dosyayi "S:" surucusu uzerinden aciyor; surucu LV_USE_FS_STDIO ile
+    // /sdcard'a bagli (bkz. config.json sdkconfig_append). Cozucu olarak
+    // LODEPNG (PNG) ve TJPGD (baseline JPEG) derlenmis durumda.
+    static constexpr int kMaxPixels = 1500 * 1000;  // cozulmus goruntu RAM'e sigsin
+
+    void BuildGalleryTile(lv_obj_t* tile) {
+        gallery_hint_ = CreateLabel(tile, "");
+        lv_obj_set_width(gallery_hint_, lv_pct(100));
+        lv_label_set_long_mode(gallery_hint_, LV_LABEL_LONG_WRAP);
+
+        // Icerik her aciliista yeniden uretiliyor; etiketleri plain_labels_ e
+        // EKLEMIYORUZ, yoksa lv_obj_clean sonrasi StylePanel olu isaretciye
+        // dokunur (wifi listesinde ayni tuzak var).
+        gallery_list_ = lv_obj_create(tile);
+        lv_obj_set_width(gallery_list_, lv_pct(100));
+        lv_obj_set_flex_grow(gallery_list_, 1);
+        lv_obj_set_style_bg_opa(gallery_list_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(gallery_list_, 0, 0);
+        lv_obj_set_style_pad_all(gallery_list_, 0, 0);
+        lv_obj_set_style_pad_row(gallery_list_, 4, 0);
+        lv_obj_set_flex_flow(gallery_list_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_scroll_dir(gallery_list_, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(gallery_list_, LV_SCROLLBAR_MODE_OFF);
+    }
+
+    void BuildPhotoTile(lv_obj_t* tile) {
+        photo_image_ = lv_image_create(tile);
+        lv_obj_set_width(photo_image_, lv_pct(100));
+        lv_obj_set_flex_grow(photo_image_, 1);
+        lv_obj_add_flag(photo_image_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_image_set_inner_align(photo_image_, LV_IMAGE_ALIGN_CENTER);
+
+        photo_note_ = CreateLabel(tile, "");
+        lv_obj_set_width(photo_note_, lv_pct(100));
+        lv_label_set_long_mode(photo_note_, LV_LABEL_LONG_WRAP);
+    }
+
+    void RefreshGallery() {
+        lv_obj_clean(gallery_list_);
+        gallery_files_.clear();
+        if (sd_.list_images) {
+            gallery_files_ = sd_.list_images();
+        }
+        if (gallery_files_.empty()) {
+            lv_label_set_text(gallery_hint_,
+                              "Kartta gorsel yok. SD Kart sayfasindan dosya sunucusunu acip "
+                              "bilgisayardan PNG veya JPEG yukle.");
+            return;
+        }
+        lv_label_set_text_fmt(gallery_hint_, "%d gorsel", static_cast<int>(gallery_files_.size()));
+        for (size_t i = 0; i < gallery_files_.size(); i++) {
+            AddGalleryRow(gallery_files_[i].c_str(), static_cast<int>(i));
+        }
+    }
+
+    void AddGalleryRow(const char* text, int index) {
+        lv_obj_t* button = lv_button_create(gallery_list_);
+        lv_obj_set_width(button, lv_pct(100));
+        lv_obj_set_height(button, 30);
+        lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(index)));
+        lv_obj_add_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_obj_center(label);
+        lv_obj_add_event_cb(button, GalleryRowClickedCb, LV_EVENT_CLICKED, this);
+        if (current_theme_ != nullptr) {
+            auto* theme = static_cast<LvglTheme*>(current_theme_);
+            StyleButton(button, label, theme->chat_background_color(), theme->text_color());
+        }
+    }
+
+    void ShowPhoto(int index) {
+        if (index < 0 || index >= static_cast<int>(gallery_files_.size())) {
+            return;
+        }
+        // Kaynak dizeyi uyede tutuyoruz: lv_image_set_src yolu kopyalamiyor,
+        // isaretciyi sakliyor.
+        photo_path_ = "S:/" + gallery_files_[index];
+
+        // Once basligi oku: bozuk ya da desteklenmeyen dosyada tam cozumu hic
+        // denemeyelim, buyuk dosyada da RAM'i yakmayalim.
+        lv_image_header_t header = {};
+        if (lv_image_decoder_get_info(photo_path_.c_str(), &header) != LV_RESULT_OK) {
+            lv_image_set_src(photo_image_, nullptr);
+            lv_label_set_text(photo_note_,
+                              "Acilamadi. Yalnizca PNG ve basit (progressive olmayan) JPEG "
+                              "destekleniyor.");
+            ShowView(View::kPhoto);
+            return;
+        }
+        if (static_cast<int>(header.w) * static_cast<int>(header.h) > kMaxPixels) {
+            lv_image_set_src(photo_image_, nullptr);
+            lv_label_set_text_fmt(photo_note_,
+                                  "Gorsel cok buyuk (%dx%d). 240x284 civarina kucultup tekrar "
+                                  "yukle.",
+                                  static_cast<int>(header.w), static_cast<int>(header.h));
+            ShowView(View::kPhoto);
+            return;
+        }
+
+        lv_image_set_scale(photo_image_, FitScale(header.w, header.h));
+        lv_image_set_src(photo_image_, photo_path_.c_str());
+        lv_label_set_text_fmt(photo_note_, "%s  %dx%d", gallery_files_[index].c_str(),
+                              static_cast<int>(header.w), static_cast<int>(header.h));
+        ShowView(View::kPhoto);
+    }
+
+    // LVGL olcegi 256 = %100. Kucultuyoruz ama buyutmuyoruz.
+    static uint32_t FitScale(int32_t w, int32_t h) {
+        if (w <= 0 || h <= 0) {
+            return 256;
+        }
+        int available_w = 240 - 2 * kSafeInsetX;
+        int available_h = 284 - kSafeInsetTop - 60;  // baslik + alt yazi payi
+        uint32_t by_w = static_cast<uint32_t>(available_w * 256 / w);
+        uint32_t by_h = static_cast<uint32_t>(available_h * 256 / h);
+        uint32_t scale = by_w < by_h ? by_w : by_h;
+        return scale >= 256 ? 256 : (scale < 1 ? 1 : scale);
     }
 
     // ------------------------------------------------------------------
@@ -1313,7 +1460,7 @@ private:
         }
 
         for (lv_obj_t* screen : {launcher_, view_settings_, view_wifi_, view_info_, view_actions_,
-                                 view_alarm_, view_sd_}) {
+                                 view_alarm_, view_sd_, view_gallery_, view_photo_}) {
             if (screen != nullptr) {
                 lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
             }
@@ -1347,6 +1494,13 @@ private:
             case View::kSd:
                 active = view_sd_;
                 RefreshSd();
+                break;
+            case View::kGallery:
+                active = view_gallery_;
+                RefreshGallery();
+                break;
+            case View::kPhoto:
+                active = view_photo_;
                 break;
             default:
                 break;
@@ -1563,7 +1717,17 @@ private:
     static void ScreenClickedEventCb(lv_event_t* e) { Self(e)->OnScreenClicked(); }
     static void OpenEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
     static void CloseEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
-    static void BackEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
+    // Gorsel tam ekrandan geri okuna basinca menuye degil galeriye donmeli.
+    static void BackEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->ShowView(self->current_view_ == View::kPhoto ? View::kGallery : View::kLauncher);
+    }
+
+    static void GalleryRowClickedCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->NotifyActivity();
+        self->ShowPhoto(RowIndex(e));
+    }
 
     static void AppTileEventCb(lv_event_t* e) {
         auto* self = Self(e);

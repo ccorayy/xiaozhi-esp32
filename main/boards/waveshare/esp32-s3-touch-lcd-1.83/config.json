@@ -7,7 +7,11 @@
             "name": "esp32-s3-touch-lcd-1.83",
             "sdkconfig_append": [
                 "CONFIG_USE_WECHAT_MESSAGE_STYLE=n",
-                "CONFIG_USE_DEVICE_AEC=y"
+                "CONFIG_USE_DEVICE_AEC=y",
+                "CONFIG_LV_USE_FS_STDIO=y",
+                "CONFIG_LV_FS_STDIO_LETTER=83",
+                "CONFIG_LV_FS_STDIO_PATH=\"/sdcard\"",
+                "CONFIG_LV_USE_TJPGD=y"
             ]
         }
     ]
