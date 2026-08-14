@@ -98,12 +98,26 @@ public:
 
     void NotifyActivity() {
         last_activity_us_ = esp_timer_get_time();
-        if (clock_visible_) {
+        if (clock_visible_ && !force_clock_) {
             ShowClock(false);
         }
     }
 
-    // Panel acikken yuzu tamamen gizle
+    // Saat uygulamasi: bosta beklemeden dogrudan kadrani ac
+    void ForceClock(bool on) {
+        force_clock_ = on;
+        if (root_ == nullptr) {
+            return;
+        }
+        ShowClock(on);
+        if (!on) {
+            last_activity_us_ = esp_timer_get_time();
+        }
+    }
+
+    bool IsClockVisible() const { return clock_visible_; }
+
+    // Kabuk (menu/uygulama) acikken yuzu tamamen gizle
     void SetHidden(bool hidden) {
         if (root_ == nullptr) {
             return;
@@ -122,7 +136,7 @@ public:
         }
         int64_t idle_s = (esp_timer_get_time() - last_activity_us_) / 1000000;
 
-        if (!clock_visible_ && idle_s >= kIdleSeconds) {
+        if (!clock_visible_ && !force_clock_ && idle_s >= kIdleSeconds) {
             ShowClock(true);
         }
         if (clock_visible_) {
@@ -444,6 +458,7 @@ private:
     const Expression* current_ = nullptr;
     int64_t last_activity_us_ = 0;
     bool clock_visible_ = false;
+    bool force_clock_ = false;
     int tick_count_ = 0;
     int next_blink_ = 4;
 };

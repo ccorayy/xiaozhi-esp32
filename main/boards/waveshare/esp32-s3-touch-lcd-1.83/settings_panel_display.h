@@ -11,11 +11,17 @@
 // fonksiyonlari sadece lv_screen_active() cocuklariyla ugrastigi icin
 // birbirimizin ayagina basmiyoruz.
 //
-//   ekrana dokunma      -> sohbeti baslat/bitir (boot butonuyla ayni is)
-//   bosta 15 sn         -> gozler yerini saate birakir, dokununca geri gelir
-//   asagi kaydirma      -> panel acilir  (ust seride dokunmak da acar)
-//   yukari kaydirma     -> panel kapanir
-//   saga/sola kaydirma  -> sayfalar: Ayarlar / Bilgi / Kisayollar / WiFi
+// Telefon benzeri yapi: acilista MENU var, uygulamaya girilir, geri donulur.
+//
+//   MENU                -> 6 uygulama ikonu (Sohbet, Saat, Ayarlar, WiFi,
+//                          Bilgi, Kisayollar)
+//   Sohbet              -> gozler; ekrana dokunmak konusmayi baslatir/bitirir
+//   Saat                -> halkali kadran (saniye + pil)
+//   uygulama icinde     -> ust soldaki geri oku menuye dondurur
+//   yukari kaydirma     -> her yerden Sohbet ekranina
+//   asagi kaydirma      -> Sohbet/Saat ekranindan menuye
+//
+// Asistan konusmaya baslarsa cihaz kendiliginden Sohbet ekranina gecer.
 //
 // WiFi sayfasinda ag TARAMASI YOK, bilerek. esp-wifi-connect bileseni her
 // WIFI_EVENT_SCAN_DONE olayinda HandleScanResult() calistirip
@@ -41,6 +47,7 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <lvgl.h>
+#include <material_symbols.h>
 #include <ssid_manager.h>
 #include <wifi_manager.h>
 
@@ -102,6 +109,11 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override {
         SpiLcdDisplay::SetChatMessage(role, content);
         eyes_.NotifyActivity();
+        // Menudeyken cevap gelirse kullanici kacirmasin diye sohbete geciyoruz.
+        if (content != nullptr && content[0] != '\0' && current_view_ != View::kChat) {
+            DisplayLockGuard lock(this);
+            ShowView(View::kChat);
+        }
     }
 
     virtual void SetStatus(const char* status) override {
@@ -141,11 +153,20 @@ private:
         lv_timer_t* timer = nullptr;
     };
 
+    // Hangi ekrandayiz. kChat ve kClock kabugu gizler (altta gozler/saat kalir),
+    // digerleri kabuk uzerinde tam ekran acilir.
+    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions };
+    View current_view_ = View::kLauncher;
+
     EyesFace eyes_;
     lv_timer_t* face_timer_ = nullptr;
+    lv_obj_t* launcher_ = nullptr;
+    lv_obj_t* view_settings_ = nullptr;
+    lv_obj_t* view_wifi_ = nullptr;
+    lv_obj_t* view_info_ = nullptr;
+    lv_obj_t* view_actions_ = nullptr;
 
     lv_obj_t* panel_ = nullptr;
-    lv_obj_t* pager_ = nullptr;
     lv_obj_t* open_strip_ = nullptr;
 
     // Sayfa 1 - Ayarlar
@@ -174,6 +195,9 @@ private:
 
     // Tema degisiminde yeniden renklendirilecek duz yazi etiketleri.
     std::vector<lv_obj_t*> plain_labels_;
+
+    // Ikon yazi tipiyle cizilecek etiketler (menu simgeleri, geri oku).
+    std::vector<lv_obj_t*> icon_labels_;
 
     // Kaydirma hareketi de LV_EVENT_CLICKED uretebiliyor; paneli acan kaydirmanin
     // ayni zamanda sohbeti baslatmasini engellemek icin.
@@ -249,32 +273,21 @@ private:
         lv_obj_remove_flag(panel_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(panel_, GestureEventCb, LV_EVENT_GESTURE, this);
 
-        // lv_tileview upstream'de kapali (CONFIG_LV_USE_TILEVIEW=n, flash tasarrufu).
-        // Paylasilan sdkconfig'i degistirmek yerine sayfalamayi yatay scroll snap ile
-        // kendimiz kuruyoruz - sadece temel nesne ozellikleri, ek bagimlilik yok.
-        pager_ = lv_obj_create(panel_);
-        lv_obj_set_size(pager_, width_, height_);
-        lv_obj_set_pos(pager_, 0, 0);
-        lv_obj_set_style_bg_opa(pager_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(pager_, 0, 0);
-        lv_obj_set_style_pad_all(pager_, 0, 0);
-        lv_obj_set_style_pad_column(pager_, 0, 0);
-        lv_obj_set_flex_flow(pager_, LV_FLEX_FLOW_ROW);
-        lv_obj_set_scroll_dir(pager_, LV_DIR_HOR);
-        lv_obj_set_scroll_snap_x(pager_, LV_SCROLL_SNAP_CENTER);
-        lv_obj_add_flag(pager_, LV_OBJ_FLAG_SCROLL_ONE);  // tek hamlede tek sayfa
-        lv_obj_set_scrollbar_mode(pager_, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_add_flag(pager_, LV_OBJ_FLAG_EVENT_BUBBLE);
-
-        BuildSettingsTile(CreatePage());
-        BuildInfoTile(CreatePage());
-        BuildActionsTile(CreatePage());
-        BuildWifiTile(CreatePage());
+        BuildLauncher();
+        view_settings_ = CreateAppView("Ayarlar");
+        BuildSettingsTile(view_settings_);
+        view_wifi_ = CreateAppView("WiFi");
+        BuildWifiTile(view_wifi_);
+        view_info_ = CreateAppView("Bilgi");
+        BuildInfoTile(view_info_);
+        view_actions_ = CreateAppView("Kisayollar");
+        BuildActionsTile(view_actions_);
 
         BuildKeyboard();
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
 
         StylePanel();
+        ShowView(View::kLauncher);
     }
 
     void HookScreenEvents() {
@@ -310,32 +323,118 @@ private:
         lv_obj_add_event_cb(open_strip_, GestureEventCb, LV_EVENT_GESTURE, this);
     }
 
-    lv_obj_t* CreatePage() {
-        lv_obj_t* page = lv_obj_create(pager_);
-        lv_obj_set_size(page, width_, height_);
-        lv_obj_set_style_radius(page, 0, 0);
-        lv_obj_set_style_border_width(page, 0, 0);
-        lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_left(page, kSafeInsetX, 0);
-        lv_obj_set_style_pad_right(page, kSafeInsetX, 0);
-        lv_obj_set_style_pad_top(page, kSafeInsetTop, 0);
-        lv_obj_set_style_pad_bottom(page, 14, 0);
-        lv_obj_set_style_pad_row(page, 8, 0);
-        lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
-        // Sayfa kendi icinde kaymasin; yatay kaydirmayi pager_ yonetiyor, dikey
-        // hareket de LV_EVENT_GESTURE olarak panele ulassin diye.
-        lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_add_flag(page, LV_OBJ_FLAG_EVENT_BUBBLE);
-        return page;
+    // Uygulama ekrani: tam ekran, ustte geri oku ve baslik.
+    lv_obj_t* CreateAppView(const char* title) {
+        lv_obj_t* view = lv_obj_create(panel_);
+        lv_obj_set_size(view, width_, height_);
+        lv_obj_set_pos(view, 0, 0);
+        lv_obj_add_flag(view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_radius(view, 0, 0);
+        lv_obj_set_style_border_width(view, 0, 0);
+        lv_obj_set_style_bg_opa(view, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_left(view, kSafeInsetX, 0);
+        lv_obj_set_style_pad_right(view, kSafeInsetX, 0);
+        lv_obj_set_style_pad_top(view, kSafeInsetTop, 0);
+        lv_obj_set_style_pad_bottom(view, 14, 0);
+        lv_obj_set_style_pad_row(view, 8, 0);
+        lv_obj_set_flex_flow(view, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(view, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollbar_mode(view, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_add_flag(view, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        lv_obj_t* header = lv_obj_create(view);
+        lv_obj_remove_style_all(header);
+        lv_obj_set_width(header, lv_pct(100));
+        lv_obj_set_height(header, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(header, 8, 0);
+        lv_obj_add_flag(header, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(header, BackEventCb, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* arrow = CreateLabel(header, MATERIAL_SYMBOLS_ARROW_BACK);
+        icon_labels_.push_back(arrow);
+        CreateLabel(header, title);
+        return view;
+    }
+
+    // ------------------------------------------------------------------
+    // Menu (ana ekran)
+    // ------------------------------------------------------------------
+    struct AppEntry {
+        const char* icon;
+        const char* name;
+        uint32_t color;
+        View target;
+    };
+
+    void BuildLauncher() {
+        launcher_ = lv_obj_create(panel_);
+        lv_obj_set_size(launcher_, width_, height_);
+        lv_obj_set_pos(launcher_, 0, 0);
+        lv_obj_set_style_radius(launcher_, 0, 0);
+        lv_obj_set_style_border_width(launcher_, 0, 0);
+        lv_obj_set_style_bg_opa(launcher_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_left(launcher_, 14, 0);
+        lv_obj_set_style_pad_right(launcher_, 14, 0);
+        lv_obj_set_style_pad_top(launcher_, kSafeInsetTop + 14, 0);
+        lv_obj_set_style_pad_row(launcher_, 10, 0);
+        lv_obj_set_style_pad_column(launcher_, 8, 0);
+        lv_obj_set_flex_flow(launcher_, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(launcher_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_START);
+        lv_obj_remove_flag(launcher_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(launcher_, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        static const AppEntry apps[] = {
+            {MATERIAL_SYMBOLS_CHAT_BUBBLE, "Sohbet", 0x0A84FF, View::kChat},
+            {MATERIAL_SYMBOLS_SCHEDULE, "Saat", 0xFF9F0A, View::kClock},
+            {MATERIAL_SYMBOLS_SETTINGS, "Ayarlar", 0x8E8E93, View::kSettings},
+            {MATERIAL_SYMBOLS_WIFI, "WiFi", 0x30D158, View::kWifi},
+            {MATERIAL_SYMBOLS_INFO, "Bilgi", 0xBF5AF2, View::kInfo},
+            {MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "Kisayol", 0xFF453A, View::kActions},
+        };
+        for (const auto& app : apps) {
+            AddAppTile(app);
+        }
+    }
+
+    void AddAppTile(const AppEntry& app) {
+        lv_obj_t* cell = lv_obj_create(launcher_);
+        lv_obj_remove_style_all(cell);
+        lv_obj_set_size(cell, 94, 78);
+        lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(cell, 4, 0);
+        lv_obj_remove_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(cell, reinterpret_cast<void*>(static_cast<intptr_t>(app.target)));
+        lv_obj_add_event_cb(cell, AppTileEventCb, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* box = lv_obj_create(cell);
+        lv_obj_remove_style_all(box);
+        lv_obj_set_size(box, 50, 50);
+        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(box, lv_color_hex(app.color), 0);
+        lv_obj_set_style_radius(box, 14, 0);
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        lv_obj_t* icon = lv_label_create(box);
+        lv_label_set_text(icon, app.icon);
+        lv_obj_set_style_text_color(icon, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(icon);
+        icon_labels_.push_back(icon);
+
+        CreateLabel(cell, app.name);
     }
 
     // ------------------------------------------------------------------
     // Sayfa 1 - Ayarlar
     // ------------------------------------------------------------------
     void BuildSettingsTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Ayarlar  1/4      kapat");
-
         lv_obj_t* volume_row = CreateRow(tile);
         CreateLabel(volume_row, "Ses");
         volume_value_label_ = CreateLabel(volume_row, "0");
@@ -366,7 +465,7 @@ private:
         lv_obj_add_flag(theme_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(theme_switch_, ThemeEventCb, LV_EVENT_VALUE_CHANGED, this);
 
-        close_button_ = CreateButton(tile, "Kapat", &close_button_label_);
+        close_button_ = CreateButton(tile, "Menu", &close_button_label_);
         lv_obj_add_event_cb(close_button_, CloseEventCb, LV_EVENT_CLICKED, this);
     }
 
@@ -374,7 +473,6 @@ private:
     // Sayfa 2 - Bilgi
     // ------------------------------------------------------------------
     void BuildInfoTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Bilgi  2/4      kapat");
         info_battery_ = CreateInfoRow(tile, "Pil");
         info_wifi_ = CreateInfoRow(tile, "WiFi");
         info_ip_ = CreateInfoRow(tile, "IP");
@@ -393,8 +491,6 @@ private:
     // Sayfa 3 - Kisayollar
     // ------------------------------------------------------------------
     void BuildActionsTile(lv_obj_t* tile) {
-        CreateHeader(tile, "Kisayollar  3/4      kapat");
-
         chat_button_ = CreateButton(tile, "Sohbeti Baslat / Bitir", &chat_button_label_);
         lv_obj_add_event_cb(chat_button_, ChatEventCb, LV_EVENT_CLICKED, this);
 
@@ -425,8 +521,6 @@ private:
     // Sayfa 4 - WiFi
     // ------------------------------------------------------------------
     void BuildWifiTile(lv_obj_t* tile) {
-        CreateHeader(tile, "WiFi  4/4      kapat");
-
         wifi_status_label_ = CreateLabel(tile, "-");
         lv_obj_set_width(wifi_status_label_, lv_pct(100));
         lv_label_set_long_mode(wifi_status_label_, LV_LABEL_LONG_DOT);
@@ -659,15 +753,6 @@ private:
     // ------------------------------------------------------------------
     // Widget yardimcilari
     // ------------------------------------------------------------------
-    // Baslik ayni zamanda kapatma dugmesi: yukari kaydirma hareketi her zaman
-    // isabet etmeyebiliyor, gorunur ve garantili bir cikis yolu kaliyor.
-    void CreateHeader(lv_obj_t* tile, const char* text) {
-        lv_obj_t* label = CreateLabel(tile, text);
-        lv_obj_set_width(label, lv_pct(100));
-        lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(label, CloseEventCb, LV_EVENT_CLICKED, this);
-    }
-
     lv_obj_t* CreateLabel(lv_obj_t* parent, const char* text) {
         lv_obj_t* label = lv_label_create(parent);
         lv_label_set_text(label, text);
@@ -719,6 +804,11 @@ private:
 
         for (lv_obj_t* label : plain_labels_) {
             lv_obj_set_style_text_color(label, theme->text_color(), 0);
+        }
+        // Menu simgeleri ve geri oku Material Symbols yazi tipiyle cizilir;
+        // normal metin fontunda bu karakterler yok.
+        for (lv_obj_t* icon : icon_labels_) {
+            lv_obj_set_style_text_font(icon, theme->large_icon_font()->font(), 0);
         }
 
         for (lv_obj_t* slider : {volume_slider_, brightness_slider_}) {
@@ -784,36 +874,67 @@ private:
     // ------------------------------------------------------------------
     // Panel ac/kapa
     // ------------------------------------------------------------------
-    void OpenPanel() {
-        if (panel_ == nullptr || !lv_obj_has_flag(panel_, LV_OBJ_FLAG_HIDDEN)) {
+    // Tek gecis noktasi: hangi ekranin gorunecegine burasi karar verir.
+    // kChat ve kClock kabugu gizler; altta ekranda duran gozler/saat gorunur.
+    void ShowView(View v) {
+        if (panel_ == nullptr) {
             return;
         }
-        SyncControlsFromDevice();
-        RefreshInfo();
-        RefreshWifiStatus();
-        ShowSavedNetworks();
-        eyes_.SetHidden(true);
-        lv_obj_remove_flag(panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
-        NotifyActivity();
-    }
+        current_view_ = v;
+        bool shell_visible = (v != View::kChat && v != View::kClock);
 
-    void ClosePanel() {
-        if (panel_ == nullptr || lv_obj_has_flag(panel_, LV_OBJ_FLAG_HIDDEN)) {
-            return;
+        if (shell_visible) {
+            eyes_.SetHidden(true);
+            lv_obj_remove_flag(panel_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            HideKeyboard();
+            lv_obj_add_flag(panel_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
+            eyes_.SetHidden(false);
+            eyes_.ForceClock(v == View::kClock);
         }
-        HideKeyboard();
+
+        for (lv_obj_t* screen : {launcher_, view_settings_, view_wifi_, view_info_, view_actions_}) {
+            if (screen != nullptr) {
+                lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+
+        lv_obj_t* active = nullptr;
+        switch (v) {
+            case View::kLauncher:
+                active = launcher_;
+                break;
+            case View::kSettings:
+                active = view_settings_;
+                SyncControlsFromDevice();
+                break;
+            case View::kWifi:
+                active = view_wifi_;
+                RefreshWifiStatus();
+                ShowSavedNetworks();
+                break;
+            case View::kInfo:
+                active = view_info_;
+                RefreshInfo();
+                break;
+            case View::kActions:
+                active = view_actions_;
+                break;
+            default:
+                break;
+        }
+        if (active != nullptr) {
+            lv_obj_remove_flag(active, LV_OBJ_FLAG_HIDDEN);
+        }
+
         ResetConfirm(wifi_confirm_);
         ResetConfirm(restart_confirm_);
-        lv_obj_add_flag(panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(open_strip_, LV_OBJ_FLAG_HIDDEN);
-        eyes_.SetHidden(false);
-        eyes_.NotifyActivity();
         NotifyActivity();
-    }
-
-    bool IsPanelOpen() const {
-        return panel_ != nullptr && !lv_obj_has_flag(panel_, LV_OBJ_FLAG_HIDDEN);
+        if (v != View::kClock) {
+            eyes_.NotifyActivity();
+        }
     }
 
     void SyncControlsFromDevice() {
@@ -943,7 +1064,7 @@ private:
 
         auto action = confirm.action;
         ResetConfirm(confirm);
-        ClosePanel();
+        ShowView(View::kChat);
         if (action) {
             action();
         }
@@ -964,14 +1085,14 @@ private:
 
     void OnChatButton() {
         NotifyActivity();
-        ClosePanel();
+        ShowView(View::kChat);
         Application::GetInstance().ToggleChatState();
     }
 
     // Ekrana dokunmak sohbeti baslatir/bitirir. Turkce wake word mumkun olmadigi
     // icin (ESP-SR sadece Ingilizce/Mandarin) asil kullanim yolu bu.
     void OnScreenClicked() {
-        if (IsPanelOpen() || gesture_handled_) {
+        if (current_view_ != View::kChat || gesture_handled_) {
             return;
         }
         NotifyActivity();
@@ -987,11 +1108,15 @@ private:
         }
         lv_dir_t dir = lv_indev_get_gesture_dir(indev);
         if (dir == LV_DIR_BOTTOM) {
-            gesture_handled_ = true;
-            OpenPanel();
+            // Sohbet veya saat ekranindan menuye
+            if (current_view_ == View::kChat || current_view_ == View::kClock) {
+                gesture_handled_ = true;
+                ShowView(View::kLauncher);
+            }
         } else if (dir == LV_DIR_TOP) {
+            // Her yerden sohbete
             gesture_handled_ = true;
-            ClosePanel();
+            ShowView(View::kChat);
         }
     }
 
@@ -1009,8 +1134,18 @@ private:
         self->eyes_.NotifyActivity();
     }
     static void ScreenClickedEventCb(lv_event_t* e) { Self(e)->OnScreenClicked(); }
-    static void OpenEventCb(lv_event_t* e) { Self(e)->OpenPanel(); }
-    static void CloseEventCb(lv_event_t* e) { Self(e)->ClosePanel(); }
+    static void OpenEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
+    static void CloseEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
+    static void BackEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
+
+    static void AppTileEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        // Ikon kutusuna dokunulunca olay oradan gelir; bize isleyicinin bagli
+        // oldugu hucre lazim, o yuzden current_target.
+        auto* cell = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
+        int target = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(cell)));
+        self->ShowView(static_cast<View>(target));
+    }
     static void VolumeEventCb(lv_event_t* e) { Self(e)->OnVolumeEvent(e); }
     static void BrightnessEventCb(lv_event_t* e) { Self(e)->OnBrightnessEvent(e); }
     static void ThemeEventCb(lv_event_t* e) { Self(e)->OnThemeEvent(); }
@@ -1021,7 +1156,7 @@ private:
     static void NoopEventCb(lv_event_t* e) { (void)e; }
 
     static int RowIndex(lv_event_t* e) {
-        auto* obj = static_cast<lv_obj_t*>(lv_event_get_target(e));
+        auto* obj = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
         return static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(obj)));
     }
 
@@ -1067,8 +1202,9 @@ private:
 
     static void InfoTimerCb(lv_timer_t* timer) {
         auto* self = static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer));
-        if (self->IsPanelOpen()) {
+        if (self->current_view_ == View::kInfo) {
             self->RefreshInfo();
+        } else if (self->current_view_ == View::kWifi) {
             self->RefreshWifiStatus();
         }
     }
