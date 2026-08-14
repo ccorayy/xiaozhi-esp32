@@ -206,10 +206,16 @@ public:
 
     virtual void SetChatMessage(const char* role, const char* content) override {
         SpiLcdDisplay::SetChatMessage(role, content);
+        // ⚠️ eyes_.NotifyActivity() saat kadranini gizleyebiliyor, yani LVGL
+        // nesnelerine dokunuyor. Bu metot LVGL gorevinden degil, uyku
+        // zamanlayicisinin esp_timer gorevinden de cagriliyor
+        // (PowerSaveTimer -> SetPowerSaveMode -> SetChatMessage). Kilitsiz
+        // birakilinca LVGL'in gecersiz alan listesi bozuluyor ve cihaz
+        // lv_inv_area icinde sonsuz donguye giriyordu.
+        DisplayLockGuard lock(this);
         eyes_.NotifyActivity();
         // Menudeyken cevap gelirse kullanici kacirmasin diye sohbete geciyoruz.
         if (content != nullptr && content[0] != '\0' && current_view_ != View::kChat) {
-            DisplayLockGuard lock(this);
             ShowView(View::kChat);
         }
     }
@@ -223,6 +229,7 @@ public:
         // Saat bicimindeki cagrilari yok sayiyoruz.
         bool is_clock_tick = status != nullptr && strlen(status) == 5 && status[2] == ':';
         if (!is_clock_tick) {
+            DisplayLockGuard lock(this);  // LVGL'e dokunuyor, bkz. SetChatMessage
             eyes_.NotifyActivity();
         }
     }

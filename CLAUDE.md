@@ -164,6 +164,13 @@ yapılıp hata yutuluyor. Yeni I2C çipi eklerken bu kalıbı kopyala.
 
 Yerelde ESP-IDF kurulu değil. Derleme `.github/workflows/agon-build.yml` ile yapılır.
 
+> **Çökme/donma ayıklama:** artifact'a `build/xiaozhi.elf` de konuyor ve workflow'un
+> `backtrace` girdisi var. Seri porttan alınan adresleri çözmek için:
+> `gh -R ccorayy/xiaozhi-esp32 workflow run agon-build.yml --ref pwr-button -f backtrace="0x4201... 0x4202..."`
+> sonra `gh run view <id> --log`. Yerelde xtensa toolchain yok, çözüm CI'da yapılıyor.
+> ⚠️ Adreslerin anlamlı olması için ELF, cihazdaki firmware ile **aynı kaynaktan**
+> derlenmiş olmalı; sadece workflow dosyası değiştiyse adresler kayar değil.
+
 ```yaml
 name: Agon Firmware
 on: [workflow_dispatch, push → branches: pwr-button]
@@ -262,6 +269,7 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 | Konu | Gerçek |
 |---|---|
 | **Dokunmatik** | Upstream'de hiçbir tıklanabilir widget yok. Bu fork'ta `settings_panel_display.h` ile kullanılıyor (bkz. §3). Kaydırma olayı parmağın altındaki nesneye gider; `container_`/`emoji_box_` üzerinde `EVENT_BUBBLE` ile ekrana çıkarılıyor ve scroll'un hareketi yutmaması için o ikisinde `SCROLLABLE` kapatılıyor. |
+| **LVGL'i kilitsiz cagirmak** | Cihaz **donuyor** (yeniden baslatmiyor, ekran son kareyi tutuyor), seri portta `task_wdt: IDLE0` + `CPU 0: esp_timer` ve `lv_inv_area` icinde sonsuz dongu. Sebep: `Display` sanal metotlari (`SetStatus`, `SetChatMessage`, `SetEmotion`) LVGL gorevinden **degil** ana gorev ve `PowerSaveTimer`'in esp_timer gorevinden de cagriliyor (`OnEnterSleepMode` → `SetPowerSaveMode` → `SetChatMessage`). Override edip icinde LVGL'e dokunuyorsan **`DisplayLockGuard` sart**. Kilit ozyinelemeli (`xSemaphoreTakeRecursive`), ust sinif da kilitliyor olsa bile ic ice almak guvenli. |
 | **`-Werror` enum** | `LV_PART_x \| LV_STATE_x` doğrudan OR'lanınca `-Werror=deprecated-enum-enum-conversion` derlemeyi durduruyor. `lv_style_selector_t`'ye cast et. Bir CI turu bu yüzden yandı. |
 | **Kapalı LVGL widget'ları** | `sdkconfig.defaults`'ta flash tasarrufu için `=n`: **tileview, tabview, keyboard, list, menu, msgbox, spinner, chart, calendar, span, spinbox, led, win, animimg**. Kullanmaya kalkarsan "was not declared in this scope" alırsın — bir CI turu tileview yüzünden yandı. Sayfalama `lv_obj` + `lv_obj_set_scroll_snap_x` + `SCROLL_ONE` ile kendimiz yapıldı. `slider`, `switch`, `button`, `buttonmatrix` **açık**. Paylaşılan sdkconfig'i değiştirmek tüm board'ları etkiler, son çare olsun. |
 | **microSD** | ✅ **Bu fork'ta çalışıyor** — 64 GB FAT32 kart cihazda doğrulandı (`59.5 GB OK`). Pinler stok `config.h`'da **yoktu**, Waveshare BSP bileşeninden alındı. `main/CMakeLists.txt`'te SDMMC bağımlılığı bu board için de eklendi. **Ama hâlâ tüketicisi yok** — sadece `/sdcard` mount ediliyor. `format_if_mount_failed=false`, asla formatlama. Upstream issue #1053 hâlâ açık. |
