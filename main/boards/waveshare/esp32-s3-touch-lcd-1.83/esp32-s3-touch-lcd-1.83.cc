@@ -156,15 +156,17 @@ private:
     bool imu_muted_ = false;
     int imu_volume_before_mute_ = 60;
 
-    // Cihazda olculdu: masada duz dururken x=+0.99, y=0.07, z=-0.01.
-    // Yani ekrana dik olan eksen X; ilk surumde Z varsaymistim ve yuzustu
-    // algilama hem yanlis tetikleniyor hem de geri donmuyordu.
-    //   duz (ekran yukari) -> x = +1.0
-    //   yuzustu            -> x = -1.0
-    //   yan yatik          -> x = 0 civari (hicbir sey yapmiyoruz)
+    // Cihazda olculen gercek degerler:
+    //   dik duruyor (ekran kullaniciya bakiyor) -> x=+1.0, z= 0.0
+    //   ekran masaya kapali (yuzustu)           -> x= 0.0, z=-1.0
+    //   sirtustu duz yatiyor                    -> z=+1.0
+    // Yani "ekrani kapatmak" Z ekseninde goruluyor. Ilk surum bunu dogru
+    // yakaliyordu ama sesi geri acma kosulu z > +0.30 idi; o da ancak SIRTUSTU
+    // yatarken saglaniyor. Cihaz tekrar DIK konursa z sifira yakin kaliyor,
+    // kosul saglanmiyor ve ses kapali kaliyordu. Artik "yuzustu degilse" acilir.
     static constexpr float kMotionThreshold = 0.35f;   // normal kullanimda 0.2-0.3 geliyordu
-    static constexpr float kFaceDownX = -0.60f;
-    static constexpr float kFaceUpX = 0.40f;
+    static constexpr float kFaceDownZ = -0.60f;        // ekran asagi bakiyor
+    static constexpr float kNotFaceDownZ = -0.30f;     // histerezis: bu esigin ustu "yuzustu degil"
     static constexpr int kFaceDownSamples = 4;         // ~0.8 sn dogrulama
 
     void InitializeImu() {
@@ -221,14 +223,14 @@ private:
 
         // Yuzustu birakinca sessize al. Anlik sarsintiyla tetiklenmesin diye
         // ust uste birkac ornek bekliyoruz.
-        if (x < kFaceDownX) {
+        if (z < kFaceDownZ) {
             if (imu_face_down_count_ < kFaceDownSamples) {
                 imu_face_down_count_++;
                 if (imu_face_down_count_ == kFaceDownSamples && !imu_muted_) {
                     SetMutedByGesture(true);
                 }
             }
-        } else if (x > kFaceUpX) {
+        } else if (z > kNotFaceDownZ) {
             imu_face_down_count_ = 0;
             if (imu_muted_) {
                 SetMutedByGesture(false);
