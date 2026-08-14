@@ -11,7 +11,9 @@
                 "CONFIG_LV_USE_FS_STDIO=y",
                 "CONFIG_LV_FS_STDIO_LETTER=83",
                 "CONFIG_LV_FS_STDIO_PATH=\"/sdcard\"",
-                "CONFIG_LV_USE_TJPGD=y"
+                "CONFIG_LV_USE_TJPGD=y",
+                "CONFIG_LV_CACHE_DEF_SIZE=4194304",
+                "CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=16"
             ]
         }
     ]

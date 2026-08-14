@@ -694,7 +694,15 @@ private:
     // LVGL dosyayi "S:" surucusu uzerinden aciyor; surucu LV_USE_FS_STDIO ile
     // /sdcard'a bagli (bkz. config.json sdkconfig_append). Cozucu olarak
     // LODEPNG (PNG) ve TJPGD (baseline JPEG) derlenmis durumda.
-    static constexpr int kMaxPixels = 1500 * 1000;  // cozulmus goruntu RAM'e sigsin
+    //
+    // ⚠️ LV_CACHE_DEF_SIZE varsayilani 0, yani goruntu onbellegi KAPALI.
+    // LVGL 9'da PNG/JPEG cozucusu cozdugu tamponu onbellege veriyor; yer
+    // yoksa acma basarisiz oluyor ve widget hicbir sey cizmiyor. Belirti
+    // sinsi: baslik okunabildigi icin en/boy dogru gorunuyor ama ekran
+    // siyah kaliyor. Onbellek de config.json'dan aciliyor (4 MB, PSRAM'den).
+    //
+    // Cozulmus PNG piksel basina 4 bayt tutuyor; sinir onbellege sigsin diye.
+    static constexpr int kMaxPixels = 800 * 1000;
 
     void BuildGalleryTile(lv_obj_t* tile) {
         gallery_hint_ = CreateLabel(tile, "");
@@ -721,7 +729,10 @@ private:
         lv_obj_set_width(photo_image_, lv_pct(100));
         lv_obj_set_flex_grow(photo_image_, 1);
         lv_obj_add_flag(photo_image_, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_image_set_inner_align(photo_image_, LV_IMAGE_ALIGN_CENTER);
+        // CONTAIN: en-boy oranini koruyarak widget'a sigacak kadar olcekliyor.
+        // Elle olcek hesaplamaktan iyi; olcek ile hizalama LVGL'de birbirine
+        // karisiyor.
+        lv_image_set_inner_align(photo_image_, LV_IMAGE_ALIGN_CONTAIN);
 
         photo_note_ = CreateLabel(tile, "");
         lv_obj_set_width(photo_note_, lv_pct(100));
@@ -786,31 +797,16 @@ private:
         if (static_cast<int>(header.w) * static_cast<int>(header.h) > kMaxPixels) {
             lv_image_set_src(photo_image_, nullptr);
             lv_label_set_text_fmt(photo_note_,
-                                  "Gorsel cok buyuk (%dx%d). 240x284 civarina kucultup tekrar "
-                                  "yukle.",
+                                  "Cok buyuk (%dx%d). 240x284 civarina kucultup tekrar yukle.",
                                   static_cast<int>(header.w), static_cast<int>(header.h));
             ShowView(View::kPhoto);
             return;
         }
 
-        lv_image_set_scale(photo_image_, FitScale(header.w, header.h));
         lv_image_set_src(photo_image_, photo_path_.c_str());
         lv_label_set_text_fmt(photo_note_, "%s  %dx%d", gallery_files_[index].c_str(),
                               static_cast<int>(header.w), static_cast<int>(header.h));
         ShowView(View::kPhoto);
-    }
-
-    // LVGL olcegi 256 = %100. Kucultuyoruz ama buyutmuyoruz.
-    static uint32_t FitScale(int32_t w, int32_t h) {
-        if (w <= 0 || h <= 0) {
-            return 256;
-        }
-        int available_w = 240 - 2 * kSafeInsetX;
-        int available_h = 284 - kSafeInsetTop - 60;  // baslik + alt yazi payi
-        uint32_t by_w = static_cast<uint32_t>(available_w * 256 / w);
-        uint32_t by_h = static_cast<uint32_t>(available_h * 256 / h);
-        uint32_t scale = by_w < by_h ? by_w : by_h;
-        return scale >= 256 ? 256 : (scale < 1 ? 1 : scale);
     }
 
     // ------------------------------------------------------------------
