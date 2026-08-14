@@ -2,6 +2,7 @@
 #include "display/lcd_display.h"
 #include "imu_qmi8658.h"
 #include "rtc_pcf85063.h"
+#include "sd_web_server.h"
 #include "settings_panel_display.h"
 #include "codecs/box_audio_codec.h"
 #include "application.h"
@@ -24,6 +25,7 @@
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
 
+#include <dirent.h>
 #include <driver/sdmmc_host.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
@@ -144,6 +146,80 @@ private:
         fclose(f);
         remove(path);
         return ok;
+    }
+
+    // ------------------------------------------------------------------
+    // SD dosya sunucusu - kart okuyucusu olmadan PC'den dosya atmak icin
+    // ------------------------------------------------------------------
+    // Varsayilan kapali; kimlik dogrulamasi yok, surekli acik durmasin.
+    // Tercih NVS'te saklaniyor ki kullanici isterse acik biraksin.
+    SdWebServer sd_server_{SD_MOUNT_POINT};
+
+    void InitializeSdServer() {
+        if (sd_card_ == nullptr) {
+            return;
+        }
+        Settings settings("sdweb", false);
+        if (settings.GetBool("on", false)) {
+            sd_server_.Start();
+        }
+    }
+
+    void SetSdServerEnabled(bool enabled) {
+        if (sd_card_ == nullptr) {
+            return;
+        }
+        if (enabled) {
+            sd_server_.Start();
+        } else {
+            sd_server_.Stop();
+        }
+        Settings settings("sdweb", true);
+        settings.SetBool("on", sd_server_.running());
+    }
+
+    std::string SdFreeSpace() {
+        if (sd_card_ == nullptr) {
+            return "-";
+        }
+        uint64_t total = 0, free_bytes = 0;
+        if (esp_vfs_fat_info(SD_MOUNT_POINT, &total, &free_bytes) != ESP_OK) {
+            return "-";
+        }
+        char text[24];
+        double gb = free_bytes / (1024.0 * 1024.0 * 1024.0);
+        if (gb >= 1.0) {
+            snprintf(text, sizeof(text), "%.1f GB", gb);
+        } else {
+            snprintf(text, sizeof(text), "%llu MB", free_bytes / (1024 * 1024));
+        }
+        return text;
+    }
+
+    // WiFi ayar portali da port 80'i kullaniyor; dosya sunucusu acikken
+    // portal baslayamaz. Portala gecmeden once yerimizi bosaltiyoruz.
+    void EnterWifiConfigModeReleasingPort() {
+        sd_server_.Stop();
+        EnterWifiConfigMode();
+    }
+
+    int SdFileCount() {
+        if (sd_card_ == nullptr) {
+            return 0;
+        }
+        DIR* dir = opendir(SD_MOUNT_POINT);
+        if (dir == nullptr) {
+            return 0;
+        }
+        int count = 0;
+        struct dirent* entry = nullptr;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (entry->d_name[0] != '.') {
+                count++;
+            }
+        }
+        closedir(dir);
+        return count;
     }
 
     // ------------------------------------------------------------------
@@ -482,7 +558,7 @@ private:
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
-                EnterWifiConfigMode();
+                EnterWifiConfigModeReleasingPort();
                 return;
             }
             app.ToggleChatState();
@@ -571,7 +647,7 @@ private:
         esp_lcd_panel_disp_on_off(panel, true);
         auto settings_display = new SettingsPanelDisplay(panel_io, panel,
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
-        settings_display->SetOnWifiConfigRequest([this]() { EnterWifiConfigMode(); });
+        settings_display->SetOnWifiConfigRequest([this]() { EnterWifiConfigModeReleasingPort(); });
         settings_display->SetOnUserActivity([this]() {
             if (power_save_timer_ != nullptr) {
                 power_save_timer_->WakeUp();
@@ -579,6 +655,16 @@ private:
         });
         settings_display->SetSdInfoProvider([this]() { return sd_status_; });
         settings_display->SetOnAlarmRing([this]() { OnAlarmRing(); });
+
+        SettingsPanelDisplay::SdHooks sd_hooks;
+        sd_hooks.status = [this]() { return sd_status_; };
+        sd_hooks.free_space = [this]() { return SdFreeSpace(); };
+        sd_hooks.file_count = [this]() { return SdFileCount(); };
+        sd_hooks.server_running = [this]() { return sd_server_.running(); };
+        sd_hooks.set_server = [this](bool on) { SetSdServerEnabled(on); };
+        sd_hooks.server_url = [this]() { return WifiManager::GetInstance().GetIpAddress(); };
+        settings_display->SetSdHooks(std::move(sd_hooks));
+
         panel_display_ = settings_display;
         display_ = settings_display;
     }
@@ -673,7 +759,7 @@ private:
             "End this conversation and enter WiFi configuration mode.\n"
             "**CAUTION** You must ask the user to confirm this action.",
             PropertyList(), [this](const PropertyList& properties) {
-                EnterWifiConfigMode();
+                EnterWifiConfigModeReleasingPort();
                 return true;
             });
     }
@@ -691,6 +777,7 @@ public:
         InitializeTouch();
         InitializeButtons();
         InitializeWeather();
+        InitializeSdServer();
         InitializeTools();
         GetBacklight()->RestoreBrightness();
     }

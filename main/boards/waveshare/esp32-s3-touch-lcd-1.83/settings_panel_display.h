@@ -69,7 +69,17 @@ class SettingsPanelDisplay : public SpiLcdDisplay {
 public:
     // Hangi ekrandayiz. kChat ve kClock kabugu gizler (altta gozler/saat kalir),
     // digerleri kabuk uzerinde tam ekran acilir.
-    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions, kAlarm };
+    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions, kAlarm, kSd };
+
+    // SD kart islerini board yapar; bu sinif ne SDMMC'yi ne de httpd'yi tanir.
+    struct SdHooks {
+        std::function<std::string()> status;          // "59.5 GB OK"
+        std::function<std::string()> free_space;      // "47.1 GB bos"
+        std::function<int()> file_count;
+        std::function<bool()> server_running;
+        std::function<void(bool)> set_server;
+        std::function<std::string()> server_url;      // "192.168.1.42"
+    };
 
     SettingsPanelDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                          int width, int height, int offset_x, int offset_y, bool mirror_x,
@@ -95,6 +105,8 @@ public:
     void SetSdInfoProvider(std::function<std::string()> provider) {
         sd_info_provider_ = std::move(provider);
     }
+
+    void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
 
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
     void SetOnAlarmRing(std::function<void()> callback) { on_alarm_ring_ = std::move(callback); }
@@ -140,6 +152,8 @@ public:
             target = View::kInfo;
         } else if (name == "alarm") {
             target = View::kAlarm;
+        } else if (name == "sd" || name == "files" || name == "dosyalar") {
+            target = View::kSd;
         } else {
             return false;
         }
@@ -158,6 +172,7 @@ public:
             case View::kInfo: return "info";
             case View::kActions: return "shortcuts";
             case View::kAlarm: return "alarm";
+            case View::kSd: return "sd";
         }
         return "unknown";
     }
@@ -245,6 +260,7 @@ private:
     lv_obj_t* view_info_ = nullptr;
     lv_obj_t* view_actions_ = nullptr;
     lv_obj_t* view_alarm_ = nullptr;
+    lv_obj_t* view_sd_ = nullptr;
 
     lv_obj_t* panel_ = nullptr;
     lv_obj_t* open_strip_ = nullptr;
@@ -289,6 +305,14 @@ private:
         lv_obj_t* label;
     };
     std::vector<LabeledButton> step_buttons_;
+
+    // Sayfa 6 - SD kart
+    SdHooks sd_;
+    lv_obj_t* sd_size_ = nullptr;
+    lv_obj_t* sd_free_ = nullptr;
+    lv_obj_t* sd_files_ = nullptr;
+    lv_obj_t* sd_server_switch_ = nullptr;
+    lv_obj_t* sd_url_ = nullptr;
 
     // Tema degisiminde yeniden renklendirilecek duz yazi etiketleri.
     std::vector<lv_obj_t*> plain_labels_;
@@ -394,6 +418,8 @@ private:
         view_alarm_ = CreateAppView("Alarm");
         BuildAlarmTile(view_alarm_);
         LoadAlarm();
+        view_sd_ = CreateAppView("SD Kart");
+        BuildSdTile(view_sd_);
 
         BuildKeyboard();
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
@@ -508,6 +534,7 @@ private:
             {MATERIAL_SYMBOLS_WIFI, "WiFi", 0x30D158, View::kWifi},
             {MATERIAL_SYMBOLS_INFO, "Bilgi", 0xBF5AF2, View::kInfo},
             {MATERIAL_SYMBOLS_ALARM, "Alarm", 0xFFD60A, View::kAlarm},
+            {MATERIAL_SYMBOLS_SD_CARD, "SD Kart", 0x64D2FF, View::kSd},
             {MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "Kisayol", 0xFF453A, View::kActions},
         };
         for (const auto& app : apps) {
@@ -630,6 +657,52 @@ private:
         confirm.action = std::move(action);
         confirm.button = CreateButton(tile, idle_text, &confirm.label);
         lv_obj_add_event_cb(confirm.button, ConfirmEventCb, LV_EVENT_CLICKED, &confirm);
+    }
+
+    // ------------------------------------------------------------------
+    // Sayfa 6 - SD kart
+    // ------------------------------------------------------------------
+    void BuildSdTile(lv_obj_t* tile) {
+        sd_size_ = CreateInfoRow(tile, "Kart");
+        sd_free_ = CreateInfoRow(tile, "Bos");
+        sd_files_ = CreateInfoRow(tile, "Dosya");
+
+        lv_obj_t* server_row = CreateRow(tile);
+        CreateLabel(server_row, "Dosya sunucusu");
+        sd_server_switch_ = lv_switch_create(server_row);
+        lv_obj_add_flag(sd_server_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_event_cb(sd_server_switch_, SdServerEventCb, LV_EVENT_VALUE_CHANGED, this);
+
+        sd_url_ = CreateLabel(tile, "");
+        lv_obj_set_width(sd_url_, lv_pct(100));
+        lv_label_set_long_mode(sd_url_, LV_LABEL_LONG_WRAP);
+    }
+
+    void RefreshSd() {
+        if (sd_size_ == nullptr) {
+            return;
+        }
+        lv_label_set_text(sd_size_, sd_.status ? sd_.status().c_str() : "-");
+        lv_label_set_text(sd_free_, sd_.free_space ? sd_.free_space().c_str() : "-");
+        if (sd_.file_count) {
+            lv_label_set_text_fmt(sd_files_, "%d", sd_.file_count());
+        } else {
+            lv_label_set_text(sd_files_, "-");
+        }
+
+        bool running = sd_.server_running && sd_.server_running();
+        if (running) {
+            lv_obj_add_state(sd_server_switch_, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(sd_server_switch_, LV_STATE_CHECKED);
+        }
+        if (!running) {
+            lv_label_set_text(sd_url_, "Bilgisayardan dosya atmak icin sunucuyu ac.");
+        } else if (sd_.server_url) {
+            std::string url = sd_.server_url();
+            lv_label_set_text(sd_url_,
+                              url.empty() ? "Ag yok" : ("Tarayicida ac:  http://" + url).c_str());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1147,7 +1220,7 @@ private:
         // OR'lanamiyor, secici tipine cevirmek gerekiyor.
         lv_style_selector_t checked_indicator = static_cast<lv_style_selector_t>(LV_PART_INDICATOR) |
                                                 static_cast<lv_style_selector_t>(LV_STATE_CHECKED);
-        for (lv_obj_t* sw : {theme_switch_, alarm_switch_}) {
+        for (lv_obj_t* sw : {theme_switch_, alarm_switch_, sd_server_switch_}) {
             if (sw == nullptr) {
                 continue;
             }
@@ -1233,7 +1306,7 @@ private:
         }
 
         for (lv_obj_t* screen : {launcher_, view_settings_, view_wifi_, view_info_, view_actions_,
-                                 view_alarm_}) {
+                                 view_alarm_, view_sd_}) {
             if (screen != nullptr) {
                 lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
             }
@@ -1263,6 +1336,10 @@ private:
             case View::kAlarm:
                 active = view_alarm_;
                 RefreshAlarmView();
+                break;
+            case View::kSd:
+                active = view_sd_;
+                RefreshSd();
                 break;
             default:
                 break;
@@ -1515,6 +1592,15 @@ private:
         self->SaveAlarm();
     }
 
+    static void SdServerEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->NotifyActivity();
+        if (self->sd_.set_server) {
+            self->sd_.set_server(lv_obj_has_state(self->sd_server_switch_, LV_STATE_CHECKED));
+        }
+        self->RefreshSd();
+    }
+
     static void AddNetworkEventCb(lv_event_t* e) { Self(e)->ShowSsidKeyboard(); }
     static void WifiScanEventCb(lv_event_t* e) { Self(e)->StartScan(); }
 
@@ -1585,6 +1671,8 @@ private:
             self->RefreshInfo();
         } else if (self->current_view_ == View::kWifi) {
             self->RefreshWifiStatus();
+        } else if (self->current_view_ == View::kSd) {
+            self->RefreshSd();  // yukleme sirasinda dosya sayisi/bos alan degisir
         }
     }
 };

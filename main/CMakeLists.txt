@@ -1059,6 +1059,12 @@ if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD OR CONFIG_BOARD_TYPE_WAVESHARE_E
         sdmmc
     )
 endif()
+# SD kart dosya sunucusu (sd_web_server.h) icin; sadece bu board kullaniyor.
+if(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_83)
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA
+        esp_http_server
+    )
+endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
