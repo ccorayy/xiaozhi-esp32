@@ -23,15 +23,16 @@
 //
 // Asistan konusmaya baslarsa cihaz kendiliginden Sohbet ekranina gecer.
 //
-// WiFi sayfasinda ag TARAMASI YOK, bilerek. esp-wifi-connect bileseni her
-// WIFI_EVENT_SCAN_DONE olayinda HandleScanResult() calistirip
+// WiFi TARAMASI - neden bu kadar dolambacli:
+// esp-wifi-connect bileseni her WIFI_EVENT_SCAN_DONE olayinda
 // esp_wifi_scan_get_ap_records() cagiriyor; bu fonksiyon sonuclari kopyaladiktan
-// sonra listeyi serbest birakiyor. Kendi taramamizi baslatsak bile sonuclar biz
-// okumadan siliniyor (cihazda denendi: hep "Ag bulunamadi"). Olay isleyicileri
-// kayit sirasina gore calisiyor ve bilesen WiFi baslarken kaydoluyor, yani her
-// zaman bizden once. Sonuclari ondan once kapmak da otomatik baglanmayi bozardi
-// - bilesen o listeyi hangi kayitli aga baglanacagini secmek icin kullaniyor.
-// Cozum: ag adi da klavyeden elle yaziliyor.
+// sonra listeyi SERBEST BIRAKIYOR. Ilk denemede kendi taramamizi baslatmistik ve
+// sonuclar biz okumadan siliniyordu (cihazda: hep "Ag bulunamadi").
+// Cozum: olay isleyicileri kayit SIRASINA gore calisiyor ve bizim SetupUI()
+// (application.cc:64) bilesenin baslatildigi StartNetwork()'ten (satir 162) once
+// caliyor. Olay dongusunu kendimiz kurup isleyicimizi ONCE kaydediyoruz.
+// Bilesenin otomatik baglanmasini bozmamak icin sonuclari yalnizca kullanici
+// "Aglari Tara" dedigi turda tuketiyoruz; diger turlarda dokunmuyoruz.
 // ---------------------------------------------------------------------------
 
 #include "application.h"
@@ -47,6 +48,10 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <lvgl.h>
+#include <esp_event.h>
+#include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <material_symbols.h>
 #include <ssid_manager.h>
 #include <wifi_manager.h>
@@ -212,6 +217,17 @@ private:
     lv_obj_t* wifi_add_button_ = nullptr;
     lv_obj_t* wifi_add_button_label_ = nullptr;
     lv_obj_t* wifi_list_ = nullptr;
+    lv_obj_t* wifi_scan_button_ = nullptr;
+    lv_obj_t* wifi_scan_button_label_ = nullptr;
+    bool scan_pending_ = false;   // yalnizca true iken sonuclari tuketiyoruz
+
+    struct ScanResult {
+        std::string ssid;
+        int rssi = 0;
+        bool encrypted = true;
+    };
+    std::vector<ScanResult> scan_results_;
+    static constexpr int kMaxScanResults = 15;
 
     // Sifre klavyesi (LV_USE_KEYBOARD=n oldugu icin lv_buttonmatrix ile elde yapildi)
     lv_obj_t* kb_overlay_ = nullptr;
@@ -261,6 +277,7 @@ private:
         }
 
         HookScreenEvents();
+        HookWifiScanEvent();
         CreateOpenStrip();
 
         panel_ = lv_obj_create(lv_layer_top());
@@ -525,8 +542,14 @@ private:
         lv_obj_set_width(wifi_status_label_, lv_pct(100));
         lv_label_set_long_mode(wifi_status_label_, LV_LABEL_LONG_DOT);
 
-        // Tarama yok - bkz. asagidaki not. Ag adi elle yaziliyor.
-        wifi_add_button_ = CreateButton(tile, "Ag Ekle", &wifi_add_button_label_);
+        lv_obj_t* buttons = CreateRow(tile);
+        wifi_scan_button_ = CreateButton(buttons, "Tara", &wifi_scan_button_label_);
+        lv_obj_set_width(wifi_scan_button_, lv_pct(48));
+        lv_obj_set_height(wifi_scan_button_, 32);
+        lv_obj_add_event_cb(wifi_scan_button_, WifiScanEventCb, LV_EVENT_CLICKED, this);
+
+        wifi_add_button_ = CreateButton(buttons, "Elle Ekle", &wifi_add_button_label_);
+        lv_obj_set_width(wifi_add_button_, lv_pct(48));
         lv_obj_set_height(wifi_add_button_, 32);
         lv_obj_add_event_cb(wifi_add_button_, AddNetworkEventCb, LV_EVENT_CLICKED, this);
 
@@ -579,6 +602,91 @@ private:
             StyleButton(button, label, theme->chat_background_color(), theme->text_color());
         }
         return button;
+    }
+
+    // Olay dongusunu erken kurup isleyicimizi bilesenden ONCE kaydediyoruz.
+    // Bilesen de ayni dongude ESP_ERR_INVALID_STATE'i zarifce karsiliyor
+    // (wifi_manager.cc: sadece baska hata olursa sikayet ediyor).
+    void HookWifiScanEvent() {
+        esp_event_loop_create_default();
+        esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, ScanDoneHandler,
+                                            this, nullptr);
+    }
+
+    void StartScan() {
+        if (scan_pending_) {
+            return;
+        }
+        scan_pending_ = true;
+        lv_label_set_text(wifi_scan_button_label_, "...");
+
+        wifi_scan_config_t cfg = {};
+        cfg.show_hidden = false;
+        cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+        cfg.scan_time.active.min = 100;
+        cfg.scan_time.active.max = 300;
+        esp_err_t err = esp_wifi_scan_start(&cfg, false);  // bloklamayan
+        // Bilesen zaten tariyorsa ESP_ERR_WIFI_STATE gelir; sorun degil, o
+        // taramanin sonucunu biz tuketecegiz.
+        if (err != ESP_OK && err != ESP_ERR_WIFI_STATE) {
+            ESP_LOGW("SettingsPanel", "scan_start: %s", esp_err_to_name(err));
+            scan_pending_ = false;
+            lv_label_set_text(wifi_scan_button_label_, "Tara");
+        }
+    }
+
+    // WIFI_EVENT_SCAN_DONE - olay gorevinde calisir, LVGL gorevinde degil.
+    static void ScanDoneHandler(void* arg, esp_event_base_t, int32_t, void*) {
+        auto* self = static_cast<SettingsPanelDisplay*>(arg);
+        if (!self->scan_pending_) {
+            return;  // bilesenin kendi taramasi - dokunma
+        }
+        self->scan_pending_ = false;
+
+        std::vector<ScanResult> found;
+        uint16_t count = 0;
+        esp_wifi_scan_get_ap_num(&count);
+        if (count > kMaxScanResults) {
+            count = kMaxScanResults;
+        }
+        if (count > 0) {
+            std::vector<wifi_ap_record_t> records(count);
+            if (esp_wifi_scan_get_ap_records(&count, records.data()) == ESP_OK) {
+                for (uint16_t i = 0; i < count; i++) {
+                    std::string ssid(reinterpret_cast<const char*>(records[i].ssid));
+                    if (ssid.empty()) {
+                        continue;
+                    }
+                    ScanResult item;
+                    item.ssid = ssid;
+                    item.rssi = records[i].rssi;
+                    item.encrypted = records[i].authmode != WIFI_AUTH_OPEN;
+                    found.push_back(item);
+                }
+            }
+        }
+
+        DisplayLockGuard lock(self);
+        self->scan_results_ = std::move(found);
+        lv_label_set_text(self->wifi_scan_button_label_, "Tara");
+        if (self->current_view_ == View::kWifi) {
+            self->ShowScanResults();
+        }
+    }
+
+    void ShowScanResults() {
+        lv_obj_clean(wifi_list_);
+        if (scan_results_.empty()) {
+            AddListRow("Ag bulunamadi", -1, NoopEventCb, false);
+            return;
+        }
+        for (size_t i = 0; i < scan_results_.size(); i++) {
+            const auto& r = scan_results_[i];
+            char row[96];
+            snprintf(row, sizeof(row), "%s  %d dBm%s", r.ssid.c_str(), r.rssi,
+                     r.encrypted ? "" : "  (acik)");
+            AddListRow(row, static_cast<int>(i), ScanResultClickedCb, false);
+        }
     }
 
     void ShowSavedNetworks() {
@@ -829,6 +937,8 @@ private:
         StyleButton(chat_button_, chat_button_label_, theme->chat_background_color(),
                     theme->text_color());
         StyleButton(wifi_add_button_, wifi_add_button_label_, theme->chat_background_color(),
+                    theme->text_color());
+        StyleButton(wifi_scan_button_, wifi_scan_button_label_, theme->chat_background_color(),
                     theme->text_color());
         if (kb_overlay_ != nullptr) {
             lv_obj_set_style_bg_opa(kb_overlay_, LV_OPA_COVER, 0);
@@ -1152,6 +1262,19 @@ private:
     static void ChatEventCb(lv_event_t* e) { Self(e)->OnChatButton(); }
 
     static void AddNetworkEventCb(lv_event_t* e) { Self(e)->ShowSsidKeyboard(); }
+    static void WifiScanEventCb(lv_event_t* e) { Self(e)->StartScan(); }
+
+    static void ScanResultClickedCb(lv_event_t* e) {
+        auto* self = Self(e);
+        int index = RowIndex(e);
+        if (index < 0 || index >= static_cast<int>(self->scan_results_.size())) {
+            return;
+        }
+        self->NotifyActivity();
+        self->kb_ssid_ = self->scan_results_[index].ssid;
+        self->kb_password_.clear();
+        self->ShowPasswordKeyboard();  // ag adi hazir, dogrudan sifreye gec
+    }
     static void KeyboardEventCb(lv_event_t* e) { Self(e)->OnKeyPressed(); }
     static void NoopEventCb(lv_event_t* e) { (void)e; }
 
