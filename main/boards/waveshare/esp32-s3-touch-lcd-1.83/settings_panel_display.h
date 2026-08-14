@@ -42,6 +42,7 @@
 #include "board.h"
 #include "lcd_display.h"
 #include "lvgl_theme.h"
+#include "settings.h"
 
 #include <esp_app_desc.h>
 #include <esp_log.h>
@@ -58,6 +59,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <initializer_list>
 #include <string>
@@ -67,7 +69,7 @@ class SettingsPanelDisplay : public SpiLcdDisplay {
 public:
     // Hangi ekrandayiz. kChat ve kClock kabugu gizler (altta gozler/saat kalir),
     // digerleri kabuk uzerinde tam ekran acilir.
-    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions };
+    enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions, kAlarm };
 
     SettingsPanelDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                          int width, int height, int offset_x, int offset_y, bool mirror_x,
@@ -94,6 +96,32 @@ public:
         sd_info_provider_ = std::move(provider);
     }
 
+    // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
+    void SetOnAlarmRing(std::function<void()> callback) { on_alarm_ring_ = std::move(callback); }
+
+    // Sesle alarm kurma (board'daki MCP araci cagirir, baska gorevden gelir).
+    bool SetAlarm(int hour, int minute, bool enabled) {
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+            return false;
+        }
+        DisplayLockGuard lock(this);
+        alarm_hour_ = hour;
+        alarm_minute_ = minute;
+        alarm_enabled_ = enabled;
+        alarm_ring_ticks_ = 0;
+        SuppressImmediateRing();
+        SaveAlarm();
+        RefreshAlarmView();
+        return true;
+    }
+
+    std::string GetAlarmText() {
+        char buffer[40];
+        snprintf(buffer, sizeof(buffer), "%02d:%02d %s", alarm_hour_, alarm_minute_,
+                 alarm_enabled_ ? "acik" : "kapali");
+        return buffer;
+    }
+
     // Sesle arayuz kontrolu icin disari acilan kapi (board'daki MCP araci cagirir).
     // Baska bir gorevden gelir, o yuzden LVGL kilidini burada aliyoruz.
     bool OpenApp(const std::string& name) {
@@ -110,6 +138,8 @@ public:
             target = View::kWifi;
         } else if (name == "info" || name == "bilgi") {
             target = View::kInfo;
+        } else if (name == "alarm") {
+            target = View::kAlarm;
         } else {
             return false;
         }
@@ -127,6 +157,7 @@ public:
             case View::kWifi: return "wifi";
             case View::kInfo: return "info";
             case View::kActions: return "shortcuts";
+            case View::kAlarm: return "alarm";
         }
         return "unknown";
     }
@@ -213,6 +244,7 @@ private:
     lv_obj_t* view_wifi_ = nullptr;
     lv_obj_t* view_info_ = nullptr;
     lv_obj_t* view_actions_ = nullptr;
+    lv_obj_t* view_alarm_ = nullptr;
 
     lv_obj_t* panel_ = nullptr;
     lv_obj_t* open_strip_ = nullptr;
@@ -240,6 +272,23 @@ private:
     lv_obj_t* chat_button_label_ = nullptr;
     ConfirmButton wifi_confirm_;
     ConfirmButton restart_confirm_;
+
+    // Sayfa 5 - Alarm. Tek alarm yetiyor, her gun ayni saatte calar.
+    lv_obj_t* alarm_time_label_ = nullptr;
+    lv_obj_t* alarm_switch_ = nullptr;
+    int alarm_hour_ = 7;
+    int alarm_minute_ = 0;
+    bool alarm_enabled_ = false;
+    int alarm_last_fired_ = -1;   // gunun dakikasi; ayni dakikada iki kez calmasin
+    int alarm_ring_ticks_ = 0;    // caliyorsa kalan saniye
+    std::function<void()> on_alarm_ring_;
+
+    // Sadece +/- adim butonlari; temada yeniden renklendirmek icin listeliyoruz.
+    struct LabeledButton {
+        lv_obj_t* button;
+        lv_obj_t* label;
+    };
+    std::vector<LabeledButton> step_buttons_;
 
     // Tema degisiminde yeniden renklendirilecek duz yazi etiketleri.
     std::vector<lv_obj_t*> plain_labels_;
@@ -342,6 +391,9 @@ private:
         BuildInfoTile(view_info_);
         view_actions_ = CreateAppView("Kisayollar");
         BuildActionsTile(view_actions_);
+        view_alarm_ = CreateAppView("Alarm");
+        BuildAlarmTile(view_alarm_);
+        LoadAlarm();
 
         BuildKeyboard();
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
@@ -436,11 +488,13 @@ private:
         lv_obj_set_style_radius(launcher_, 0, 0);
         lv_obj_set_style_border_width(launcher_, 0, 0);
         lv_obj_set_style_bg_opa(launcher_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_left(launcher_, 14, 0);
-        lv_obj_set_style_pad_right(launcher_, 14, 0);
-        lv_obj_set_style_pad_top(launcher_, kSafeInsetTop + 14, 0);
-        lv_obj_set_style_pad_row(launcher_, 10, 0);
-        lv_obj_set_style_pad_column(launcher_, 8, 0);
+        // 7 uygulama iki sutuna sigmiyordu; 240 px'e uc sutun ancak bu olculerle
+        // giriyor: 3*66 + 2*4 = 206 <= 240 - 2*8.
+        lv_obj_set_style_pad_left(launcher_, 8, 0);
+        lv_obj_set_style_pad_right(launcher_, 8, 0);
+        lv_obj_set_style_pad_top(launcher_, kSafeInsetTop + 12, 0);
+        lv_obj_set_style_pad_row(launcher_, 8, 0);
+        lv_obj_set_style_pad_column(launcher_, 4, 0);
         lv_obj_set_flex_flow(launcher_, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(launcher_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_START);
@@ -453,6 +507,7 @@ private:
             {MATERIAL_SYMBOLS_SETTINGS, "Ayarlar", 0x8E8E93, View::kSettings},
             {MATERIAL_SYMBOLS_WIFI, "WiFi", 0x30D158, View::kWifi},
             {MATERIAL_SYMBOLS_INFO, "Bilgi", 0xBF5AF2, View::kInfo},
+            {MATERIAL_SYMBOLS_ALARM, "Alarm", 0xFFD60A, View::kAlarm},
             {MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "Kisayol", 0xFF453A, View::kActions},
         };
         for (const auto& app : apps) {
@@ -463,7 +518,7 @@ private:
     void AddAppTile(const AppEntry& app) {
         lv_obj_t* cell = lv_obj_create(launcher_);
         lv_obj_remove_style_all(cell);
-        lv_obj_set_size(cell, 94, 78);
+        lv_obj_set_size(cell, 66, 74);
         lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
@@ -475,10 +530,10 @@ private:
 
         lv_obj_t* box = lv_obj_create(cell);
         lv_obj_remove_style_all(box);
-        lv_obj_set_size(box, 50, 50);
+        lv_obj_set_size(box, 46, 46);
         lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(box, lv_color_hex(app.color), 0);
-        lv_obj_set_style_radius(box, 14, 0);
+        lv_obj_set_style_radius(box, 12, 0);
         lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
 
@@ -575,6 +630,126 @@ private:
         confirm.action = std::move(action);
         confirm.button = CreateButton(tile, idle_text, &confirm.label);
         lv_obj_add_event_cb(confirm.button, ConfirmEventCb, LV_EVENT_CLICKED, &confirm);
+    }
+
+    // ------------------------------------------------------------------
+    // Sayfa 5 - Alarm
+    // ------------------------------------------------------------------
+    void BuildAlarmTile(lv_obj_t* tile) {
+        alarm_time_label_ = CreateLabel(tile, "07:00");
+        lv_obj_set_style_text_font(alarm_time_label_, &font_noto_sans_basic_30_4, 0);
+        lv_obj_set_width(alarm_time_label_, lv_pct(100));
+        lv_obj_set_style_text_align(alarm_time_label_, LV_TEXT_ALIGN_CENTER, 0);
+
+        lv_obj_t* hour_row = CreateRow(tile);
+        CreateLabel(hour_row, "Saat");
+        AddStepButton(hour_row, "-", -60);
+        AddStepButton(hour_row, "+", 60);
+
+        lv_obj_t* minute_row = CreateRow(tile);
+        CreateLabel(minute_row, "Dakika");
+        AddStepButton(minute_row, "-", -1);
+        AddStepButton(minute_row, "+", 1);
+
+        lv_obj_t* enable_row = CreateRow(tile);
+        CreateLabel(enable_row, "Alarm acik");
+        alarm_switch_ = lv_switch_create(enable_row);
+        lv_obj_add_flag(alarm_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_event_cb(alarm_switch_, AlarmSwitchEventCb, LV_EVENT_VALUE_CHANGED, this);
+
+        lv_obj_t* hint = CreateLabel(tile, "Her gun calar. Susturmak icin ekrana dokun.");
+        lv_obj_set_width(hint, lv_pct(100));
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    }
+
+    // step dakika cinsinden: +-1 dakika, +-60 saat. Tek isleyici yetsin diye
+    // deger butonun user_data'sinda tasiniyor.
+    void AddStepButton(lv_obj_t* parent, const char* text, int step) {
+        lv_obj_t* label = nullptr;
+        lv_obj_t* button = CreateButton(parent, text, &label);
+        lv_obj_set_width(button, 54);
+        lv_obj_set_height(button, 34);
+        lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(step)));
+        lv_obj_add_event_cb(button, AlarmStepEventCb, LV_EVENT_CLICKED, this);
+        step_buttons_.push_back({button, label});
+    }
+
+    void RefreshAlarmView() {
+        if (alarm_time_label_ == nullptr) {
+            return;
+        }
+        lv_label_set_text_fmt(alarm_time_label_, "%02d:%02d", alarm_hour_, alarm_minute_);
+        if (alarm_enabled_) {
+            lv_obj_add_state(alarm_switch_, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(alarm_switch_, LV_STATE_CHECKED);
+        }
+    }
+
+    void LoadAlarm() {
+        Settings settings("alarm", false);
+        alarm_hour_ = settings.GetInt("hour", 7);
+        alarm_minute_ = settings.GetInt("minute", 0);
+        alarm_enabled_ = settings.GetBool("on", false);
+        RefreshAlarmView();
+    }
+
+    void SaveAlarm() {
+        Settings settings("alarm", true);
+        settings.SetInt("hour", alarm_hour_);
+        settings.SetInt("minute", alarm_minute_);
+        settings.SetBool("on", alarm_enabled_);
+    }
+
+    // Saniyede bir, yuz zamanlayicisindan cagriliyor.
+    void AlarmTick() {
+        if (alarm_ring_ticks_ > 0) {
+            alarm_ring_ticks_--;
+            if (alarm_ring_ticks_ % 3 == 0 && on_alarm_ring_) {
+                on_alarm_ring_();  // ses kisa, 3 saniyede bir tekrarliyoruz
+            }
+            return;
+        }
+        if (!alarm_enabled_) {
+            return;
+        }
+        time_t now = time(nullptr);
+        struct tm* t = localtime(&now);
+        // Saat sunucudan (OTA yaniti) veya RTC'den gelene kadar 1970'teyiz.
+        if (t == nullptr || t->tm_year + 1900 < 2024) {
+            return;
+        }
+        int minute_of_day = t->tm_hour * 60 + t->tm_min;
+        if (t->tm_hour == alarm_hour_ && t->tm_min == alarm_minute_ &&
+            alarm_last_fired_ != minute_of_day) {
+            alarm_last_fired_ = minute_of_day;
+            StartRinging();
+        }
+    }
+
+    void StartRinging() {
+        alarm_ring_ticks_ = 60;  // en fazla bir dakika
+        // Saat ekranina geciyoruz: hem saat gorunur, hem panel kapandigi icin
+        // bildirim yazisi (ust bardaki etiket) ortaya cikar.
+        ShowView(View::kClock);
+        ShowNotification("Alarm", 10000);
+        if (on_alarm_ring_) {
+            on_alarm_ring_();
+        }
+    }
+
+    void StopRinging() {
+        if (alarm_ring_ticks_ > 0) {
+            alarm_ring_ticks_ = 0;
+            ShowNotification("Alarm kapatildi", 2000);
+        }
+    }
+
+    // Kullanici saati ayarlarken denk gelen dakika hemen calmasin.
+    void SuppressImmediateRing() {
+        time_t now = time(nullptr);
+        struct tm* t = localtime(&now);
+        alarm_last_fired_ = (t != nullptr) ? t->tm_hour * 60 + t->tm_min : -1;
     }
 
     // ------------------------------------------------------------------
@@ -968,12 +1143,17 @@ private:
             lv_obj_set_style_bg_color(slider, theme->text_color(), LV_PART_KNOB);
         }
 
-        lv_obj_set_style_bg_color(theme_switch_, theme->chat_background_color(), LV_PART_MAIN);
         // -Werror=deprecated-enum-enum-conversion: lv_part_t ile lv_state_t dogrudan
         // OR'lanamiyor, secici tipine cevirmek gerekiyor.
         lv_style_selector_t checked_indicator = static_cast<lv_style_selector_t>(LV_PART_INDICATOR) |
                                                 static_cast<lv_style_selector_t>(LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(theme_switch_, theme->text_color(), checked_indicator);
+        for (lv_obj_t* sw : {theme_switch_, alarm_switch_}) {
+            if (sw == nullptr) {
+                continue;
+            }
+            lv_obj_set_style_bg_color(sw, theme->chat_background_color(), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(sw, theme->text_color(), checked_indicator);
+        }
 
         StyleButton(close_button_, close_button_label_, theme->chat_background_color(),
                     theme->text_color());
@@ -983,6 +1163,10 @@ private:
                     theme->text_color());
         StyleButton(wifi_scan_button_, wifi_scan_button_label_, theme->chat_background_color(),
                     theme->text_color());
+        for (const auto& pair : step_buttons_) {
+            StyleButton(pair.button, pair.label, theme->chat_background_color(),
+                        theme->text_color());
+        }
         if (kb_overlay_ != nullptr) {
             lv_obj_set_style_bg_opa(kb_overlay_, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_color(kb_overlay_, theme->background_color(), 0);
@@ -1048,7 +1232,8 @@ private:
             eyes_.ForceClock(v == View::kClock);
         }
 
-        for (lv_obj_t* screen : {launcher_, view_settings_, view_wifi_, view_info_, view_actions_}) {
+        for (lv_obj_t* screen : {launcher_, view_settings_, view_wifi_, view_info_, view_actions_,
+                                 view_alarm_}) {
             if (screen != nullptr) {
                 lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
             }
@@ -1074,6 +1259,10 @@ private:
                 break;
             case View::kActions:
                 active = view_actions_;
+                break;
+            case View::kAlarm:
+                active = view_alarm_;
+                RefreshAlarmView();
                 break;
             default:
                 break;
@@ -1285,6 +1474,7 @@ private:
         auto* self = Self(e);
         self->gesture_handled_ = false;
         self->eyes_.NotifyActivity();
+        self->StopRinging();  // ekrana dokunmak calan alarmi susturur
     }
     static void ScreenClickedEventCb(lv_event_t* e) { Self(e)->OnScreenClicked(); }
     static void OpenEventCb(lv_event_t* e) { Self(e)->ShowView(View::kLauncher); }
@@ -1303,6 +1493,27 @@ private:
     static void BrightnessEventCb(lv_event_t* e) { Self(e)->OnBrightnessEvent(e); }
     static void ThemeEventCb(lv_event_t* e) { Self(e)->OnThemeEvent(); }
     static void ChatEventCb(lv_event_t* e) { Self(e)->OnChatButton(); }
+
+    static void AlarmStepEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        auto* button = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
+        int step = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(button)));
+        self->NotifyActivity();
+        int total = (self->alarm_hour_ * 60 + self->alarm_minute_ + step + 1440) % 1440;
+        self->alarm_hour_ = total / 60;
+        self->alarm_minute_ = total % 60;
+        self->SuppressImmediateRing();
+        self->SaveAlarm();
+        self->RefreshAlarmView();
+    }
+
+    static void AlarmSwitchEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->NotifyActivity();
+        self->alarm_enabled_ = lv_obj_has_state(self->alarm_switch_, LV_STATE_CHECKED);
+        self->SuppressImmediateRing();
+        self->SaveAlarm();
+    }
 
     static void AddNetworkEventCb(lv_event_t* e) { Self(e)->ShowSsidKeyboard(); }
     static void WifiScanEventCb(lv_event_t* e) { Self(e)->StartScan(); }
@@ -1363,7 +1574,9 @@ private:
     }
 
     static void FaceTimerCb(lv_timer_t* timer) {
-        static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer))->eyes_.Tick();
+        auto* self = static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer));
+        self->eyes_.Tick();
+        self->AlarmTick();
     }
 
     static void InfoTimerCb(lv_timer_t* timer) {

@@ -93,12 +93,20 @@ Değiştirme.
 Board dizininde yeni, **header-only** dosya: `SettingsPanelDisplay : SpiLcdDisplay`.
 Board `.cc`'de sadece iki yer değişti (include + display nesnesinin oluşturulduğu blok).
 
+Arayüz artık **telefon gibi**: açılışta menü (launcher), ikona dokununca o uygulama tam ekran
+açılır, başlıktaki geri okuyla menüye dönülür. Sohbet ve saat "kabuksuz" iki görünüm — panel
+gizlenir, altta gözler/saat kalır.
+
 | Hareket | Sonuç |
 |---|---|
-| Ekrana dokunma | `ToggleChatState()` — Türkçe wake word imkânsız olduğu için asıl kullanım yolu |
-| Aşağı kaydırma | Panel açılır (yedek: üst 28 px'lik görünmez şeride dokunma) |
-| Yukarı kaydırma | Panel kapanır |
-| Sağa/sola kaydırma | Sayfalar: Ayarlar / Bilgi / Kısayollar |
+| Ekrana dokunma (sohbet/saat görünümünde) | `ToggleChatState()` — Türkçe wake word imkânsız olduğu için asıl kullanım yolu |
+| Aşağı kaydırma | Menü açılır (yedek: üst 28 px'lik görünmez şeride dokunma) |
+| Yukarı kaydırma | Menü kapanır |
+| Menü ikonu | Sohbet / Saat / Ayarlar / WiFi / Bilgi / **Alarm** / Kısayol |
+| Geri oku | Menüye döner |
+
+Menü ızgarası **3 sütun × 66×74 px** (7 uygulama iki sütuna sığmıyordu). 240 px'e ancak
+`3*66 + 2*4 = 206` ile giriyor; hücre veya boşluk büyütülürse taşar.
 
 Tasarım kararları — bozmadan önce sebebini oku:
 
@@ -112,6 +120,43 @@ Tasarım kararları — bozmadan önce sebebini oku:
   kaydırmanın aynı anda sohbeti başlatmasını engelliyor.
 - Ust bar `pad_left/right` 8 → **20**, `pad_top` 4 → **10**: yuvarlak köşeler wifi/pil ikonlarını
   kırpıyordu. Cihazda doğrulandı, düzeldi.
+
+### Gözler + boşta saat — `eyes_face.h` ✅ cihazda test edildi
+
+Emoji resimleri yerine çizilmiş animasyonlu gözler; upstream'in `emoji_box_`'ı gizleniyor,
+`SetEmotion` 21 ifadeyi göz tablosuna çeviriyor. **15 saniye** etkileşim olmazsa saat ekranı:
+iki `lv_arc` halka (saniye camgöbeği, pil yeşil/kırmızı), ortada saat + tarih + hava durumu.
+
+⚠️ `LvglDisplay::UpdateStatusBar` her 10 saniyede `SetStatus("HH:MM")` çağırıyor. Bunu etkileşim
+sayarsak boşta sayacı 15 saniyeye **hiç** ulaşmıyor ve saat ekranı açılmıyor. 5 karakterli,
+3. karakteri `:` olan durum yazıları yok sayılıyor (cihazda ölçüldü, düzeldi).
+
+### IMU (QMI8658) — `imu_qmi8658.h` ✅ cihazda test edildi
+
+Sadece ivmeölçer. Eline alınca/masaya vurunca ekran uyanır; **ekranı masaya kapatınca ses kapanır**,
+düzeltince geri açılır.
+
+⚠️ Eksen: cihaz **dik dururken** x=+1.0, z=0.0; **yüzüstü** z=−1.0. Bir tur "masaya düz koy"
+varsayımıyla X'e geçtim ve çalışan davranışı bozdum. Doğrusu Z + histerezis
+(`kFaceDownZ=-0.60`, `kNotFaceDownZ=-0.30`). Sesi geri açma koşulu "sırtüstü" değil
+**"yüzüstü değil"** olmalı — ilk sürümün asıl hatası buydu.
+
+### Hava durumu ✅ / Alarm + RTC (PCF85063) — cihazda test edilmedi
+
+- **Hava durumu**: Pi'deki `mcp-search` servisinin `/weather` ucundan (önce KeenDNS adresi,
+  olmazsa LAN IP), açılıştan 30 sn sonra + 20 dakikada bir. Sunucu tarafı 20 dk önbellekli,
+  her istek Gemini araması harcamıyor.
+- **RTC**: `rtc_pcf85063.h`, adres `0x51`. Sistem saati normalde `ota.cc`'deki "Server-Time"
+  yanıtından geliyor (**timezone_offset eklenmiş halde**, yani sistem saati yerel duvar saati;
+  `TZ` kurulu değil, `localtime` = UTC = yerel). Ağ yokken cihaz 1970'te kalıyordu; artık
+  açılışta RTC'den okunuyor ve 5 dakikada bir sistem → RTC geri yazılıyor.
+- **Alarm**: tek alarm, her gün aynı saatte. NVS `Settings("alarm")` (`hour`/`minute`/`on`).
+  Yüz zamanlayıcısı (1 sn) tetikliyor; çalınca saat ekranına geçip `OGG_VIBRATION`'ı 3 saniyede
+  bir en fazla 1 dakika çalıyor, ekrana dokunmak susturuyor. MCP: `self.alarm.set` / `self.alarm.get`.
+
+⚠️ `I2cDevice::ReadReg` içinde `ESP_ERROR_CHECK` var — çip yoksa cihaz komple çöker. Hem IMU hem
+RTC önce `i2c_master_probe` ile yoklanıyor, okumalar da elle (`i2c_master_transmit_receive`)
+yapılıp hata yutuluyor. Yeni I2C çipi eklerken bu kalıbı kopyala.
 
 ---
 
@@ -231,19 +276,19 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 ## 8. Yol haritası (kullanıcının ilgilendiği sıra)
 
 1. ~~**Tam LVGL ayar paneli**~~ ✅ **bitti** — bkz. §3.
-2. **Panele WiFi sayfası** — sıradaki iş. İki parça: (a) kayıtlı ağ listesi, varsayılan seç/sil —
-   `SsidManager` ile kolay, klavye gerekmiyor; (b) yeni ağ eklemek için şifre girişi — 240 px'de
-   tuş başına 24 px, eziyetli ama yapılabilir. ⚠️ `LV_USE_KEYBOARD=n`, `lv_keyboard` yok;
-   `lv_buttonmatrix` açık, klavyeyi onunla kurmak gerekir.
-   ⚠️ Ağ **taraması** için bileşende public API yok, `esp_wifi_scan_start()` doğrudan
-   çağrılacak; bileşen de arka planda kendi taramasını yapıyor, çakışma hatasını yakala.
-3. **Özel emoji/yüz seti** — `78/xiaozhi-assets-generator` (tarayıcıda çalışır), 21 ifade, 240×284. OTA ile iner, flash gerekmez, kod değişikliği yok.
-4. **Kullanılmayan çipler** — kartta **QMI8658 IMU** ve **PCF85063 RTC** var, `main/` ağacında
-   sürücüleri **yok**. Ama sıfırdan yazmaya gerek olmayabilir: **Waveshare'in resmi örnek deposu**
-   `waveshareteam/ESP32-S3-Touch-LCD-1.83` içinde `examples/esp-idf/04_Immersive_block`
-   *"Motion-driven interactive demo"* — yani IMU bu kartta çalışıyor ve referans kod hazır.
-   IMU > RTC: eline alınca uyandırma, ters çevirince sessize alma.
-5. **microSD** — ✅ mount çalışıyor. Sıradaki soru **ne için kullanılacağı**:
+2. ~~**Panele WiFi sayfası**~~ ✅ **bitti** — tarama `esp_wifi_scan_start()` + `WIFI_EVENT_SCAN_DONE`
+   ile elle yapılıyor (bileşende public tarama API'si yok, kendi taramasıyla çakışma hatası
+   yutuluyor). Şifre klavyesi `lv_buttonmatrix` ile (⚠️ `LV_USE_KEYBOARD=n`, `lv_keyboard` yok).
+   Kayıtlı ağlar `SsidManager` üzerinden listeleniyor/siliniyor.
+3. **Özel emoji/yüz seti** — artık gerekmiyor gibi: emoji yerine çizilmiş gözler kullanılıyor
+   (bkz. §3). İstenirse `78/xiaozhi-assets-generator` (tarayıcıda çalışır), 21 ifade, 240×284.
+4. **Kullanılmayan çipler** — ✅ ikisi de kullanımda: **QMI8658 IMU** (`imu_qmi8658.h`) ve
+   **PCF85063 RTC** (`rtc_pcf85063.h`). Referans kod: `waveshareteam/ESP32-S3-Touch-LCD-1.83`
+   içinde `examples/esp-idf/04_Immersive_block` (IMU) ve `libraries/SensorLib` (RTC).
+5. **microSD** — ✅ mount çalışıyor, **sıradaki iş**. Kullanıcının kart okuyucusu yok; PC'den
+   karta dosya atmak için **cihaz üzerinde WiFi yükleme sayfası** yapılacak (USB MSC değil:
+   USB-Serial/JTAG ile OTG aynı PHY'yi paylaşıyor, MSC'ye geçmek kabloyla flash'ı feda eder).
+   Sonrasında ne için kullanılacağı:
    (Waveshare örnek deposundaki `06_videoplayer` SD'den video oynatıyor — referans kod.)
    - *Görsel/animasyon SD'den:* LVGL'in dosya sistemi sürücüleri (`LV_USE_FS_POSIX` vb.) sdkconfig'de
      **kapalı**, ama `lv_fs_drv_register()` çekirdek API — sürücüyü kendi header'ımızda kayıt

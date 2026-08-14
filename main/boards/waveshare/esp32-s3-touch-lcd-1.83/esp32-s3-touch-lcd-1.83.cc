@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "display/lcd_display.h"
 #include "imu_qmi8658.h"
+#include "rtc_pcf85063.h"
 #include "settings_panel_display.h"
 #include "codecs/box_audio_codec.h"
 #include "application.h"
@@ -28,6 +29,8 @@
 #include <sdmmc_cmd.h>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
+#include <sys/time.h>
 
 #define TAG "WaveshareEsp32s3TouchLCD1inch83"
 
@@ -257,6 +260,86 @@ private:
     }
 
     // ------------------------------------------------------------------
+    // RTC (PCF85063) - pil yedekli saat
+    // ------------------------------------------------------------------
+    // Sistem saati normalde sunucudan geliyor (ota.cc, "Server-Time"). Aga
+    // baglanana kadar cihaz 1970'te oluyor ve saat ekrani/alarm calismiyor.
+    // Kartta pil yedekli RTC var; acilista ondan okuyup sistemi kuruyoruz,
+    // sunucu saati geldikten sonra da RTC'yi guncelliyoruz.
+    static constexpr int kRtcSyncIntervalMs = 5 * 60 * 1000;
+
+    Pcf85063* rtc_ = nullptr;
+    esp_timer_handle_t rtc_timer_ = nullptr;
+
+    static bool SystemTimeValid() {
+        time_t now = time(nullptr);
+        struct tm* t = localtime(&now);
+        return t != nullptr && t->tm_year + 1900 >= 2024;
+    }
+
+    void InitializeRtc() {
+        // IMU'daki ile ayni sebep: I2cDevice::ReadReg icindeki ESP_ERROR_CHECK
+        // yanlis adreste cihazi cokertir, once yokluyoruz.
+        if (i2c_master_probe(i2c_bus_, Pcf85063::kAddr, 100) != ESP_OK) {
+            ESP_LOGW(TAG, "RTC I2C'de bulunamadi");
+            return;
+        }
+        rtc_ = new Pcf85063(i2c_bus_, Pcf85063::kAddr);
+        if (!rtc_->Initialize()) {
+            delete rtc_;
+            rtc_ = nullptr;
+            ESP_LOGW(TAG, "RTC baslatilamadi");
+            return;
+        }
+
+        struct tm t = {};
+        if (!SystemTimeValid() && rtc_->ReadTime(t)) {
+            // ota.cc sistem saatini zaten yerel saate ayarliyor (timezone_offset
+            // ekleyerek), RTC'ye de oyle yazdik; donusum gerekmiyor.
+            struct timeval tv = {};
+            tv.tv_sec = mktime(&t);
+            settimeofday(&tv, nullptr);
+            ESP_LOGI(TAG, "Saat RTC'den kuruldu: %04d-%02d-%02d %02d:%02d:%02d",
+                     t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+        }
+
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg)->SyncRtcFromSystem();
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "rtc_sync";
+        if (esp_timer_create(&args, &rtc_timer_) == ESP_OK) {
+            esp_timer_start_periodic(rtc_timer_, kRtcSyncIntervalMs * 1000LL);
+        }
+    }
+
+    void SyncRtcFromSystem() {
+        if (rtc_ == nullptr || !SystemTimeValid()) {
+            return;
+        }
+        time_t now = time(nullptr);
+        struct tm t = {};
+        localtime_r(&now, &t);
+        rtc_->WriteTime(t);
+    }
+
+    // ------------------------------------------------------------------
+    // Alarm - panelde kurulur, ses burada calinir
+    // ------------------------------------------------------------------
+    void OnAlarmRing() {
+        if (power_save_timer_ != nullptr) {
+            power_save_timer_->WakeUp();
+        }
+        // PlaySound ses hattini kullaniyor; LVGL gorevinden degil ana gorevden
+        // cagirmak daha guvenli.
+        Application::GetInstance().Schedule([]() {
+            Application::GetInstance().PlaySound(Lang::Sounds::OGG_VIBRATION);
+        });
+    }
+
+    // ------------------------------------------------------------------
     // Hava durumu - Pi'deki arama servisinin /weather ucundan
     // ------------------------------------------------------------------
     // Once genel adres (cihaz disarida da calissin), olmazsa ev agindaki IP.
@@ -481,6 +564,7 @@ private:
             }
         });
         settings_display->SetSdInfoProvider([this]() { return sd_status_; });
+        settings_display->SetOnAlarmRing([this]() { OnAlarmRing(); });
         panel_display_ = settings_display;
         display_ = settings_display;
     }
@@ -529,7 +613,7 @@ private:
         // Cihaz kendi ekranini kontrol edebildigini bilsin diye acikca tanitiyoruz.
         mcp_server.AddTool("self.ui.open_app",
             "Open a screen on the device display. "
-            "Valid values for `app`: menu, chat, clock, settings, wifi, info. "
+            "Valid values for `app`: menu, chat, clock, settings, wifi, info, alarm. "
             "Use this when the user asks to show or open something on the screen.",
             PropertyList({
                 Property("app", kPropertyTypeString)
@@ -547,6 +631,30 @@ private:
                 return panel_display_ != nullptr ? panel_display_->CurrentApp() : std::string("unknown");
             });
 
+        // Sesle alarm: "beni yarin 7'de kaldir".
+        mcp_server.AddTool("self.alarm.set",
+            "Set the device alarm clock. It rings every day at the given time until turned off. "
+            "`hour` is 0-23, `minute` is 0-59, `enabled` turns the alarm on or off.",
+            PropertyList({
+                Property("hour", kPropertyTypeInteger, 0, 23),
+                Property("minute", kPropertyTypeInteger, 0, 0, 59),
+                Property("enabled", kPropertyTypeBoolean, true)
+            }), [this](const PropertyList& properties) -> ReturnValue {
+                if (panel_display_ == nullptr) {
+                    return false;
+                }
+                return panel_display_->SetAlarm(properties["hour"].value<int>(),
+                                                properties["minute"].value<int>(),
+                                                properties["enabled"].value<bool>());
+            });
+
+        mcp_server.AddTool("self.alarm.get",
+            "Returns the current alarm time and whether it is on.",
+            PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
+                return panel_display_ != nullptr ? panel_display_->GetAlarmText()
+                                                 : std::string("yok");
+            });
+
         mcp_server.AddTool("self.system.reconfigure_wifi",
             "End this conversation and enter WiFi configuration mode.\n"
             "**CAUTION** You must ask the user to confirm this action.",
@@ -561,6 +669,7 @@ public:
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeAxp2101();
+        InitializeRtc();
         InitializeImu();
         InitializeSdCard();
         InitializeSpi();
