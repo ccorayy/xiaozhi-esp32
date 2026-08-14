@@ -1,5 +1,6 @@
 #include "wifi_board.h"
 #include "display/lcd_display.h"
+#include "imu_qmi8658.h"
 #include "settings_panel_display.h"
 #include "codecs/box_audio_codec.h"
 #include "application.h"
@@ -25,6 +26,7 @@
 #include <driver/sdmmc_host.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
+#include <cmath>
 #include <cstdio>
 
 #define TAG "WaveshareEsp32s3TouchLCD1inch83"
@@ -139,6 +141,108 @@ private:
         fclose(f);
         remove(path);
         return ok;
+    }
+
+    // ------------------------------------------------------------------
+    // Hareket algilama (QMI8658)
+    //   eline alinca / masaya vurunca  -> ekrani uyandir
+    //   ters cevirince (yuzustu)       -> sesi kapat, duzelince geri ac
+    // ------------------------------------------------------------------
+    Qmi8658* imu_ = nullptr;
+    esp_timer_handle_t imu_timer_ = nullptr;
+    float imu_last_x_ = 0, imu_last_y_ = 0, imu_last_z_ = 0;
+    bool imu_have_sample_ = false;
+    int imu_face_down_count_ = 0;
+    bool imu_muted_ = false;
+    int imu_volume_before_mute_ = 60;
+
+    static constexpr float kMotionThreshold = 0.18f;   // g cinsinden degisim
+    static constexpr float kFaceDownZ = -0.65f;        // yuzustu esigi
+    static constexpr float kFaceUpZ = 0.30f;           // duzeldi kabul esigi
+    static constexpr int kFaceDownSamples = 4;         // ~0.8 sn dogrulama
+
+    void InitializeImu() {
+        // Once yoklama: I2cDevice::ReadReg icindeki ESP_ERROR_CHECK yanlis
+        // adreste cihazi komple cokertirdi.
+        uint8_t addr = 0;
+        if (i2c_master_probe(i2c_bus_, Qmi8658::kAddrHigh, 100) == ESP_OK) {
+            addr = Qmi8658::kAddrHigh;
+        } else if (i2c_master_probe(i2c_bus_, Qmi8658::kAddrLow, 100) == ESP_OK) {
+            addr = Qmi8658::kAddrLow;
+        } else {
+            ESP_LOGW(TAG, "IMU I2C'de bulunamadi, hareket algilama kapali");
+            return;
+        }
+
+        imu_ = new Qmi8658(i2c_bus_, addr);
+        if (!imu_->Initialize()) {
+            delete imu_;
+            imu_ = nullptr;
+            return;
+        }
+
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg)->OnImuTick();
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "imu_tick";
+        if (esp_timer_create(&args, &imu_timer_) == ESP_OK) {
+            esp_timer_start_periodic(imu_timer_, 200000);  // 200 ms
+        }
+    }
+
+    void OnImuTick() {
+        float x = 0, y = 0, z = 0;
+        if (imu_ == nullptr || !imu_->ReadAccel(x, y, z)) {
+            return;
+        }
+
+        if (imu_have_sample_) {
+            float delta = fabsf(x - imu_last_x_) + fabsf(y - imu_last_y_) + fabsf(z - imu_last_z_);
+            if (delta > kMotionThreshold && power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
+        }
+        imu_last_x_ = x;
+        imu_last_y_ = y;
+        imu_last_z_ = z;
+        imu_have_sample_ = true;
+
+        // Yuzustu birakinca sessize al. Anlik sarsintiyla tetiklenmesin diye
+        // ust uste birkac ornek bekliyoruz.
+        if (z < kFaceDownZ) {
+            if (imu_face_down_count_ < kFaceDownSamples) {
+                imu_face_down_count_++;
+                if (imu_face_down_count_ == kFaceDownSamples && !imu_muted_) {
+                    SetMutedByGesture(true);
+                }
+            }
+        } else if (z > kFaceUpZ) {
+            imu_face_down_count_ = 0;
+            if (imu_muted_) {
+                SetMutedByGesture(false);
+            }
+        }
+    }
+
+    void SetMutedByGesture(bool mute) {
+        auto codec = GetAudioCodec();
+        if (codec == nullptr) {
+            return;
+        }
+        imu_muted_ = mute;
+        if (mute) {
+            imu_volume_before_mute_ = codec->output_volume();
+            codec->SetOutputVolume(0);
+            GetDisplay()->ShowNotification("Sessize alindi");
+            ESP_LOGI(TAG, "Yuzustu: ses kapatildi (onceki %d)", imu_volume_before_mute_);
+        } else {
+            codec->SetOutputVolume(imu_volume_before_mute_);
+            GetDisplay()->ShowNotification("Ses geri acildi");
+            ESP_LOGI(TAG, "Duzeldi: ses %d", imu_volume_before_mute_);
+        }
     }
 
     void InitializePowerSaveTimer() {
@@ -364,6 +468,7 @@ public:
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeAxp2101();
+        InitializeImu();
         InitializeSdCard();
         InitializeSpi();
         InitializeDisplay();
