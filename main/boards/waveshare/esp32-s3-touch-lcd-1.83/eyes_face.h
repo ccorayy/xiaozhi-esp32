@@ -15,9 +15,9 @@
 // (uzgun), egimli ustten ortmek kizgin/supheli goruntusu veriyor.
 // ---------------------------------------------------------------------------
 
+#include "board.h"
 #include "lvgl_theme.h"
 
-#include <esp_log.h>
 #include <esp_timer.h>
 #include <lvgl.h>
 
@@ -71,7 +71,7 @@ public:
         }
         RefreshColors();
         lv_obj_set_style_text_color(clock_time_, theme->text_color(), 0);
-        lv_obj_set_style_text_color(clock_date_, theme->text_color(), 0);
+        lv_obj_set_style_text_color(clock_date_, lv_color_hex(kGray), 0);
     }
 
     void SetExpression(const char* emotion) {
@@ -122,16 +122,6 @@ public:
         }
         int64_t idle_s = (esp_timer_get_time() - last_activity_us_) / 1000000;
 
-        // TESHIS: saat neden cikmiyor sorusu icin gecici. Sorun cozulunce sil.
-        if (idle_s % 5 == 0 && idle_s != last_logged_idle_) {
-            last_logged_idle_ = idle_s;
-            time_t now = time(nullptr);
-            struct tm* t = localtime(&now);
-            ESP_LOGI("EyesFace", "bosta=%llds saat_acik=%d yil=%d",
-                     (long long)idle_s, clock_visible_ ? 1 : 0,
-                     t != nullptr ? t->tm_year + 1900 : -1);
-        }
-
         if (!clock_visible_ && idle_s >= kIdleSeconds) {
             ShowClock(true);
         }
@@ -179,6 +169,16 @@ private:
     };
 
     static constexpr uint32_t kPink = 0xFF5C8A;
+    static constexpr uint32_t kCyan = 0x32D0FF;   // saniye halkasi / sarj
+    static constexpr uint32_t kGreen = 0x30D158;  // pil
+    static constexpr uint32_t kRed = 0xFF453A;    // dusuk pil
+    static constexpr uint32_t kGray = 0x8E8E93;   // tarih yazisi
+
+    static const char* Ay(int mon) {
+        static const char* aylar[] = {"Ocak", "Subat", "Mart",  "Nisan",  "Mayis", "Haziran",
+                                      "Temmuz", "Agustos", "Eylul", "Ekim", "Kasim", "Aralik"};
+        return aylar[mon % 12];
+    }
 
     // 21 ifade - isimler firmware'in gonderdikleriyle birebir ayni olmali
     // (noto_emoji.c icindeki tablo: neutral, happy, laughing, ...)
@@ -328,6 +328,27 @@ private:
         }
     }
 
+    // Kadran: iki es merkezli halka (saniye ve pil) + ortada saat.
+    // NOT: Saat yazisi 30 px. Daha buyugu icin transform_scale denendi ve
+    // cihazda hicbir sey cizilmedi - LVGL olcekli nesneyi ayri katmana ciziyor,
+    // katman olusmayinca nesne tamamen kayboluyor. Daha iri saat istenirse
+    // dogru yol o boyutta bir font uretmek.
+    lv_obj_t* MakeRing(int size, int width, uint32_t track, uint32_t accent) {
+        lv_obj_t* arc = lv_arc_create(clock_);
+        lv_obj_set_size(arc, size, size);
+        lv_obj_center(arc);
+        lv_arc_set_rotation(arc, 270);          // 12 yonunden basla
+        lv_arc_set_bg_angles(arc, 0, 360);
+        lv_obj_remove_style(arc, nullptr, LV_PART_KNOB);   // tutamak gorunmesin
+        lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_arc_width(arc, width, LV_PART_MAIN);
+        lv_obj_set_style_arc_width(arc, width, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(arc, lv_color_hex(track), LV_PART_MAIN);
+        lv_obj_set_style_arc_color(arc, lv_color_hex(accent), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
+        return arc;
+    }
+
     void CreateClock() {
         clock_ = lv_obj_create(root_);
         lv_obj_remove_style_all(clock_);
@@ -337,24 +358,30 @@ private:
         lv_obj_add_flag(clock_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_flag(clock_, LV_OBJ_FLAG_HIDDEN);
 
+        // Dis halka: dakika icindeki saniye ilerlemesi
+        ring_seconds_ = MakeRing(208, 7, 0x1C2530, kCyan);
+        lv_arc_set_range(ring_seconds_, 0, 60);
+        // Ic halka: pil seviyesi
+        ring_battery_ = MakeRing(186, 7, 0x1C2530, kGreen);
+        lv_arc_set_range(ring_battery_, 0, 100);
+
         clock_time_ = lv_label_create(clock_);
         lv_label_set_text(clock_time_, "--:--");
         lv_obj_set_style_text_font(clock_time_, &font_noto_sans_basic_30_4, 0);
-        // NOT: Burada transform_scale ile 2 kat buyutmustuk; cihazda saat HIC
-        // gorunmedi (gozler gizleniyordu ama yerine bir sey cizilmiyordu).
-        // LVGL olcekli nesneyi ayri bir katmana ciziyor ve katman olusmazsa
-        // nesne tamamen kayboluyor. Olcekleme yok, 30 px font oldugu gibi.
-        lv_obj_align(clock_time_, LV_ALIGN_CENTER, 0, -14);
+        lv_obj_align(clock_time_, LV_ALIGN_CENTER, 0, -16);
 
         clock_date_ = lv_label_create(clock_);
         lv_label_set_text(clock_date_, "");
-        lv_obj_align(clock_date_, LV_ALIGN_CENTER, 0, 24);
+        lv_obj_align(clock_date_, LV_ALIGN_CENTER, 0, 12);
+
+        clock_battery_ = lv_label_create(clock_);
+        lv_label_set_text(clock_battery_, "");
+        lv_obj_set_style_text_color(clock_battery_, lv_color_hex(kGreen), 0);
+        lv_obj_align(clock_battery_, LV_ALIGN_CENTER, 0, 38);
     }
 
     void ShowClock(bool on) {
         clock_visible_ = on;
-        ESP_LOGI("EyesFace", "ShowClock(%d) - clock_=%p time_lbl=%p", on ? 1 : 0,
-                 (void*)clock_, (void*)clock_time_);
         if (on) {
             UpdateClock();
             lv_obj_add_flag(eyes_, LV_OBJ_FLAG_HIDDEN);
@@ -377,15 +404,27 @@ private:
         char buf[16];
         strftime(buf, sizeof(buf), "%H:%M", t);
         lv_label_set_text(clock_time_, buf);
-        ESP_LOGI("EyesFace", "saat=%s gorunur=%d", buf,
-                 lv_obj_has_flag(clock_, LV_OBJ_FLAG_HIDDEN) ? 0 : 1);
+        lv_arc_set_value(ring_seconds_, t->tm_sec);
 
         static const char* gunler[] = {"Pazar",    "Pazartesi", "Sali", "Carsamba",
                                        "Persembe", "Cuma",      "Cumartesi"};
         char date[48];
-        snprintf(date, sizeof(date), "%d.%02d  %s", t->tm_mday, t->tm_mon + 1,
+        snprintf(date, sizeof(date), "%d %s  %s", t->tm_mday, Ay(t->tm_mon),
                  gunler[t->tm_wday % 7]);
         lv_label_set_text(clock_date_, date);
+
+        int level = 0;
+        bool charging = false;
+        bool discharging = false;
+        if (Board::GetInstance().GetBatteryLevel(level, charging, discharging)) {
+            lv_arc_set_value(ring_battery_, level);
+            uint32_t renk = charging ? kCyan : (level <= 20 ? kRed : kGreen);
+            lv_obj_set_style_arc_color(ring_battery_, lv_color_hex(renk), LV_PART_INDICATOR);
+            lv_obj_set_style_text_color(clock_battery_, lv_color_hex(renk), 0);
+            char pil[24];
+            snprintf(pil, sizeof(pil), "%%%d%s", level, charging ? " sarj" : "");
+            lv_label_set_text(clock_battery_, pil);
+        }
     }
 
     LvglTheme* theme_ = nullptr;
@@ -394,6 +433,9 @@ private:
     lv_obj_t* clock_ = nullptr;
     lv_obj_t* clock_time_ = nullptr;
     lv_obj_t* clock_date_ = nullptr;
+    lv_obj_t* clock_battery_ = nullptr;
+    lv_obj_t* ring_seconds_ = nullptr;
+    lv_obj_t* ring_battery_ = nullptr;
     lv_obj_t* blush_l_ = nullptr;
     lv_obj_t* blush_r_ = nullptr;
     lv_obj_t* tear_ = nullptr;
@@ -404,5 +446,4 @@ private:
     bool clock_visible_ = false;
     int tick_count_ = 0;
     int next_blink_ = 4;
-    int64_t last_logged_idle_ = -1;
 };
