@@ -152,6 +152,7 @@ private:
     esp_timer_handle_t imu_timer_ = nullptr;
     float imu_last_x_ = 0, imu_last_y_ = 0, imu_last_z_ = 0;
     bool imu_have_sample_ = false;
+    int imu_log_tick_ = 0;
     int imu_face_down_count_ = 0;
     bool imu_muted_ = false;
     int imu_volume_before_mute_ = 60;
@@ -199,11 +200,21 @@ private:
             return;
         }
 
+        float delta = 0;
         if (imu_have_sample_) {
-            float delta = fabsf(x - imu_last_x_) + fabsf(y - imu_last_y_) + fabsf(z - imu_last_z_);
+            delta = fabsf(x - imu_last_x_) + fabsf(y - imu_last_y_) + fabsf(z - imu_last_z_);
             if (delta > kMotionThreshold && power_save_timer_ != nullptr) {
                 power_save_timer_->WakeUp();
+                ESP_LOGI(TAG, "IMU hareket: delta=%.2f -> uyandirildi", delta);
             }
+        }
+
+        // TESHIS: eksenlerin gercek degerlerini gorelim (2 saniyede bir).
+        // Esikler dogrulaninca bu blok silinecek.
+        if (++imu_log_tick_ >= 10) {
+            imu_log_tick_ = 0;
+            ESP_LOGI(TAG, "IMU x=%+.2f y=%+.2f z=%+.2f delta=%.2f yuzustu_sayac=%d sessiz=%d",
+                     x, y, z, delta, imu_face_down_count_, imu_muted_ ? 1 : 0);
         }
         imu_last_x_ = x;
         imu_last_y_ = y;
