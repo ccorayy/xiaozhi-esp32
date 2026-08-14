@@ -332,8 +332,7 @@ private:
         // Cihaz kendi ekranini kontrol edebildigini bilsin diye acikca tanitiyoruz.
         mcp_server.AddTool("self.ui.open_app",
             "Open a screen on the device display. "
-            "Valid values for `app`: menu, chat, clock, settings, wifi, info.
-"
+            "Valid values for `app`: menu, chat, clock, settings, wifi, info. "
             "Use this when the user asks to show or open something on the screen.",
             PropertyList({
                 Property("app", kPropertyTypeString)
