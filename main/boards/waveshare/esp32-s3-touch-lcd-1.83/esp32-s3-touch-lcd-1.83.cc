@@ -157,21 +157,56 @@ private:
     // Varsayilan kapali; kimlik dogrulamasi yok, surekli acik durmasin.
     // Tercih NVS'te saklaniyor ki kullanici isterse acik biraksin.
     SdWebServer sd_server_{SD_MOUNT_POINT};
+    esp_timer_handle_t sd_server_timer_ = nullptr;
+    bool sd_server_wanted_ = false;
+
+    // ⚠️ httpd_start lwIP soketi aciyor. Board kurucusu calisirken ag yigini
+    // HENUZ ayakta degil; orada baslatmak
+    //   assert failed: tcpip_send_msg_wait_sem ... (Invalid mbox)
+    // ile paniklestiriyor ve cihaz acilis dongusune giriyor. Bir kez yasandi:
+    // kullanici sunucuyu acik biraktigi icin tercih NVS'ten okunup kurucuda
+    // baslatilmisti. Artik WiFi baglanana kadar bekliyoruz.
+    static constexpr int kSdServerRetryMs = 10 * 1000;
 
     void InitializeSdServer() {
         if (sd_card_ == nullptr) {
             return;
         }
         Settings settings("sdweb", false);
-        if (settings.GetBool("on", false)) {
-            sd_server_.Start();
+        if (!settings.GetBool("on", false)) {
+            return;
         }
+        sd_server_wanted_ = true;
+
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg)->TryStartSdServer();
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "sdweb_start";
+        if (esp_timer_create(&args, &sd_server_timer_) == ESP_OK) {
+            esp_timer_start_periodic(sd_server_timer_, kSdServerRetryMs * 1000LL);
+        }
+    }
+
+    void TryStartSdServer() {
+        if (sd_server_.running() || !sd_server_wanted_) {
+            esp_timer_stop(sd_server_timer_);  // isimiz bitti
+            return;
+        }
+        if (!WifiManager::GetInstance().IsConnected()) {
+            return;  // sonraki turda tekrar bak
+        }
+        // Soket ve gorev acmak esp_timer gorevinin kucuk yiginina gore agir.
+        Application::GetInstance().Schedule([this]() { sd_server_.Start(); });
     }
 
     void SetSdServerEnabled(bool enabled) {
         if (sd_card_ == nullptr) {
             return;
         }
+        sd_server_wanted_ = enabled;
         if (enabled) {
             sd_server_.Start();
         } else {
