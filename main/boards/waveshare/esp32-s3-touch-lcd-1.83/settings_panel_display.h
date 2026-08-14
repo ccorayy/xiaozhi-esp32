@@ -83,6 +83,12 @@ public:
     // Panelle etkilesim uyku sayacini sifirlasin diye.
     void SetOnUserActivity(std::function<void()> callback) { on_activity_ = std::move(callback); }
 
+    // Hava durumu board tarafindan ceklip veriliyor.
+    void SetWeatherText(const std::string& text) {
+        DisplayLockGuard lock(this);
+        eyes_.SetWeather(text);
+    }
+
     // SD kart durumunu board saglar; bu sinif SDMMC'yi tanimaz.
     void SetSdInfoProvider(std::function<std::string()> provider) {
         sd_info_provider_ = std::move(provider);

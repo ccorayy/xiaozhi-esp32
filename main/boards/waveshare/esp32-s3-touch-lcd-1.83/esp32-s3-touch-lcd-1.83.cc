@@ -256,6 +256,88 @@ private:
         }
     }
 
+    // ------------------------------------------------------------------
+    // Hava durumu - Pi'deki arama servisinin /weather ucundan
+    // ------------------------------------------------------------------
+    // Once genel adres (cihaz disarida da calissin), olmazsa ev agindaki IP.
+    // Servis yaniti onbellekli oldugu icin bu istekler Gemini aramasi harcamaz.
+    static constexpr const char* kWeatherUrlPublic = "https://hava.agonesp32.keenetic.pro/weather";
+    static constexpr const char* kWeatherUrlLan = "http://192.168.1.80:5080/weather";
+    static constexpr int kWeatherFirstDelayMs = 30 * 1000;      // ag otursun
+    static constexpr int kWeatherIntervalMs = 20 * 60 * 1000;   // 20 dakika
+
+    esp_timer_handle_t weather_timer_ = nullptr;
+
+    void InitializeWeather() {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            auto* self = static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg);
+            // Ag islemi zamanlayici gorevinde yapilmaz; kisa omurlu bir gorev acip
+            // orada cekiyoruz.
+            xTaskCreate([](void* p) {
+                static_cast<WaveshareEsp32s3TouchLCD1inch83*>(p)->FetchWeather();
+                vTaskDelete(nullptr);
+            }, "weather", 4096, self, 2, nullptr);
+            esp_timer_start_once(self->weather_timer_, kWeatherIntervalMs * 1000LL);
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "weather";
+        if (esp_timer_create(&args, &weather_timer_) == ESP_OK) {
+            esp_timer_start_once(weather_timer_, kWeatherFirstDelayMs * 1000LL);
+        }
+    }
+
+    bool TryFetchWeather(const char* url, std::string& body) {
+        auto network = GetNetwork();
+        if (network == nullptr) {
+            return false;
+        }
+        auto http = network->CreateHttp(0);
+        if (http == nullptr || !http->Open("GET", url)) {
+            return false;
+        }
+        bool ok = http->GetStatusCode() == 200;
+        if (ok) {
+            body = http->ReadAll();
+        }
+        http->Close();
+        return ok;
+    }
+
+    void FetchWeather() {
+        std::string body;
+        if (!TryFetchWeather(kWeatherUrlPublic, body) &&
+            !TryFetchWeather(kWeatherUrlLan, body)) {
+            ESP_LOGW(TAG, "Hava durumu alinamadi");
+            return;
+        }
+
+        // {"city":"Istanbul","temp":"23","desc":"Acik"}
+        std::string temp = JsonField(body, "temp");
+        std::string desc = JsonField(body, "desc");
+        if (temp.empty()) {
+            return;
+        }
+        std::string text = temp + "\xC2\xB0  " + desc;  // derece isareti (UTF-8)
+        ESP_LOGI(TAG, "Hava durumu: %s", text.c_str());
+        if (panel_display_ != nullptr) {
+            panel_display_->SetWeatherText(text);
+        }
+    }
+
+    // Kucuk yanit icin cJSON kurmaya degmez; alani elle cikariyoruz.
+    static std::string JsonField(const std::string& json, const char* key) {
+        std::string pattern = std::string("\"") + key + "\":\"";
+        auto start = json.find(pattern);
+        if (start == std::string::npos) {
+            return "";
+        }
+        start += pattern.size();
+        auto end = json.find('"', start);
+        return end == std::string::npos ? "" : json.substr(start, end - start);
+    }
+
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
         power_save_timer_->OnEnterSleepMode([this]() {
@@ -485,6 +567,7 @@ public:
         InitializeDisplay();
         InitializeTouch();
         InitializeButtons();
+        InitializeWeather();
         InitializeTools();
         GetBacklight()->RestoreBrightness();
     }

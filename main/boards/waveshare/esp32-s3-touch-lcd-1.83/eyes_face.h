@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 // Yazi tipi bileseni src/*.c dosyalarinin hepsini derliyor, yani 30 piksellik
 // font zaten binary'de. Saat icin onu kullaniyoruz (varsayilan metin 16 px).
@@ -93,6 +94,14 @@ public:
             lv_obj_remove_flag(tear_, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(tear_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // Hava durumu board tarafindan ceklip buraya veriliyor (ornek: "23  Acik").
+    void SetWeather(const std::string& text) {
+        weather_ = text;
+        if (clock_weather_ != nullptr) {
+            lv_label_set_text(clock_weather_, weather_.c_str());
         }
     }
 
@@ -386,12 +395,17 @@ private:
 
         clock_date_ = lv_label_create(clock_);
         lv_label_set_text(clock_date_, "");
-        lv_obj_align(clock_date_, LV_ALIGN_CENTER, 0, 12);
+        lv_obj_align(clock_date_, LV_ALIGN_CENTER, 0, 2);
+
+        clock_weather_ = lv_label_create(clock_);
+        lv_label_set_text(clock_weather_, "");
+        lv_obj_set_style_text_color(clock_weather_, lv_color_hex(kCyan), 0);
+        lv_obj_align(clock_weather_, LV_ALIGN_CENTER, 0, 27);
 
         clock_battery_ = lv_label_create(clock_);
         lv_label_set_text(clock_battery_, "");
         lv_obj_set_style_text_color(clock_battery_, lv_color_hex(kGreen), 0);
-        lv_obj_align(clock_battery_, LV_ALIGN_CENTER, 0, 38);
+        lv_obj_align(clock_battery_, LV_ALIGN_CENTER, 0, 52);
     }
 
     void ShowClock(bool on) {
@@ -448,6 +462,7 @@ private:
     lv_obj_t* clock_time_ = nullptr;
     lv_obj_t* clock_date_ = nullptr;
     lv_obj_t* clock_battery_ = nullptr;
+    lv_obj_t* clock_weather_ = nullptr;
     lv_obj_t* ring_seconds_ = nullptr;
     lv_obj_t* ring_battery_ = nullptr;
     lv_obj_t* blush_l_ = nullptr;
@@ -459,6 +474,7 @@ private:
     int64_t last_activity_us_ = 0;
     bool clock_visible_ = false;
     bool force_clock_ = false;
+    std::string weather_;
     int tick_count_ = 0;
     int next_blink_ = 4;
 };
