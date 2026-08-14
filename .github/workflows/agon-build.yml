@@ -2,6 +2,11 @@ name: Agon Firmware
 
 on:
   workflow_dispatch:
+    inputs:
+      backtrace:
+        description: "Cozulecek backtrace adresleri (bosluk ayrilmis, 0x... )"
+        required: false
+        default: ""
   push:
     branches:
       - pwr-button
@@ -28,6 +33,17 @@ jobs:
             --name esp32-s3-touch-lcd-1.83 \
             --language tr-TR
 
+      # Cihazdaki panik/watchdog ciktisini okuyabilmek icin. ELF olmadan
+      # backtrace sadece sayi yigini.
+      - name: Backtrace coz
+        if: ${{ inputs.backtrace != '' }}
+        shell: bash
+        run: |
+          source $IDF_PATH/export.sh
+          addrs=$(echo "${{ inputs.backtrace }}" | tr ' ' '\n' | cut -d: -f1 | tr '\n' ' ')
+          echo "Adresler: $addrs"
+          xtensa-esp32s3-elf-addr2line -pfiaC -e build/xiaozhi.elf $addrs
+
       - name: Binary'yi yukle
         uses: actions/upload-artifact@v4
         with:
@@ -35,4 +51,5 @@ jobs:
           path: |
             build/merged-binary.bin
             build/xiaozhi.bin
+            build/xiaozhi.elf
           if-no-files-found: error
