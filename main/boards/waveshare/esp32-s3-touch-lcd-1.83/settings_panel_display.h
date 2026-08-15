@@ -114,9 +114,17 @@ public:
     // GECICI TESHIS: galeri siyah ekran veriyor. Baslik okunabiliyor (en/boy
     // dogru yaziliyor) ama cizim bos. Hangi asamada koptugunu cihazin kendisi
     // soylesin diye acilista karttaki ilk gorseli cozmeyi deniyoruz.
-    // Sorun bulununca bu metot ve cagrisi silinecek.
+    //
+    // Sonuc hem seri porta hem EKRANA yaziliyor: kablo takili olmayabilir,
+    // o zaman kullanici okuyup soyluyor. LVGL'in kendi uyarisi da
+    // lv_log_register_print_cb ile yakalanip ekrana ekleniyor - asil sebep
+    // genelde orada.
+    // Sorun bulununca bu metot, kancasi ve LV_USE_LOG kaldirilacak.
     void LogImageDecodeSelfTest() {
         static const char* kTag = "GaleriTest";
+        char summary[320];
+        int used = 0;
+
         if (!sd_.list_images) {
             ESP_LOGW(kTag, "SD kancasi yok");
             return;
@@ -130,20 +138,22 @@ public:
         ESP_LOGI(kTag, "Deneme dosyasi: %s", path.c_str());
 
         DisplayLockGuard lock(this);
+        lvgl_message_[0] = '\0';  // bu testte olusan uyariyi yakalayalim
 
         // 1) Dosya sistemi surucusu dosyayi acabiliyor mu?
         lv_fs_file_t file;
         lv_fs_res_t fs_res = lv_fs_open(&file, path.c_str(), LV_FS_MODE_RD);
-        ESP_LOGI(kTag, "1) lv_fs_open -> %d (0=OK)", static_cast<int>(fs_res));
+        uint8_t head[8] = {};
+        uint32_t read = 0;
         if (fs_res == LV_FS_RES_OK) {
-            uint8_t head[8] = {};
-            uint32_t read = 0;
             lv_fs_read(&file, head, sizeof(head), &read);
-            ESP_LOGI(kTag, "   ilk %u bayt: %02X %02X %02X %02X %02X %02X %02X %02X",
-                     static_cast<unsigned>(read), head[0], head[1], head[2], head[3], head[4],
-                     head[5], head[6], head[7]);
             lv_fs_close(&file);
         }
+        ESP_LOGI(kTag, "1) lv_fs_open -> %d (0=OK), ilk %u bayt: %02X %02X %02X %02X",
+                 static_cast<int>(fs_res), static_cast<unsigned>(read), head[0], head[1], head[2],
+                 head[3]);
+        used += snprintf(summary + used, sizeof(summary) - used, "1) fs_open=%d  %02X%02X%02X%02X\n",
+                         static_cast<int>(fs_res), head[0], head[1], head[2], head[3]);
 
         // 2) Baslik okunuyor mu? (Bu asamanin calistigini zaten biliyoruz.)
         lv_image_header_t header = {};
@@ -151,19 +161,27 @@ public:
         ESP_LOGI(kTag, "2) get_info -> %d (0=OK), %dx%d, renk bicimi %d",
                  static_cast<int>(info_res), static_cast<int>(header.w),
                  static_cast<int>(header.h), static_cast<int>(header.cf));
+        used += snprintf(summary + used, sizeof(summary) - used, "2) info=%d %dx%d cf=%d\n",
+                         static_cast<int>(info_res), static_cast<int>(header.w),
+                         static_cast<int>(header.h), static_cast<int>(header.cf));
         if (info_res != LV_RESULT_OK) {
+            lv_label_set_text(photo_note_, summary);
+            ShowView(View::kPhoto);
             return;
         }
 
         // 3) Asil soru: tam cozme. lv_image_decoder_open'i dogrudan cagiramiyoruz
         // (LVGL 9'da tanimlayici yapilar ozel baslikta, disaridan eksik tip).
         // Onun yerine gercek yolu yuruyoruz: gorseli ekrana koyup cizimi
-        // zorluyoruz. Cozucu patlarsa LVGL kendi uyarisini seri porta yaziyor
-        // (LV_USE_LOG + LV_LOG_PRINTF bu is icin acildi).
-        ESP_LOGI(kTag, "3) cizim zorlaniyor - asagida LVGL uyarisi varsa sebep odur");
+        // zorluyoruz. Cozucu patlarsa LVGL uyarisini lvgl_message_'a birakiyor.
+        ESP_LOGI(kTag, "3) cizim zorlaniyor");
         ShowPhoto(0);
         lv_refr_now(nullptr);
-        ESP_LOGI(kTag, "3) cizim bitti");
+        ESP_LOGI(kTag, "3) cizim bitti. LVGL: %s",
+                 lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
+        snprintf(summary + used, sizeof(summary) - used, "3) LVGL: %s",
+                 lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
+        lv_label_set_text(photo_note_, summary);
     }
 
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
@@ -241,6 +259,10 @@ public:
 
     virtual void SetupUI() override {
         SpiLcdDisplay::SetupUI();
+
+        // GECICI: LVGL'in uyarilarini yakala ki teshis ekrana da yazilabilsin
+        // (kablo takili olmayabilir). Teshis bitince kaldirilacak.
+        lv_log_register_print_cb(LvglLogCb);
 
         DisplayLockGuard lock(this);
         ApplySafeAreaInsets();
@@ -392,6 +414,17 @@ private:
     lv_obj_t* photo_note_ = nullptr;
     std::vector<std::string> gallery_files_;
     std::string photo_path_;  // "S:/foo.jpg" - lv_image kaynagi isaretciyi tutuyor
+
+    // GECICI TESHIS: LVGL'in son uyarisi. Statik cunku geri cagirma islevi
+    // nesneyi tanimiyor; zaten tek ekran var.
+    static inline char lvgl_message_[160] = {};
+
+    static void LvglLogCb(lv_log_level_t level, const char* text) {
+        if (level < LV_LOG_LEVEL_WARN || text == nullptr) {
+            return;
+        }
+        snprintf(lvgl_message_, sizeof(lvgl_message_), "%s", text);
+    }
 
     // Tema degisiminde yeniden renklendirilecek duz yazi etiketleri.
     std::vector<lv_obj_t*> plain_labels_;
