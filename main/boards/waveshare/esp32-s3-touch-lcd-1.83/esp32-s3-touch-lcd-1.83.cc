@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <memory>
 #include <sys/time.h>
 #include <vector>
 
@@ -561,6 +562,26 @@ private:
         }
     }
 
+    // GECICI TESHIS: galeri raporunu sunucuya gonderir. Statik cunku kisa
+    // omurlu bir gorevden cagriliyor. Galeri sorunu cozulunce kaldirilacak.
+    static void PostDiagnostic(const std::string& body) {
+        auto network = Board::GetInstance().GetNetwork();
+        if (network == nullptr) {
+            return;
+        }
+        auto http = network->CreateHttp(0);
+        if (http == nullptr) {
+            return;
+        }
+        http->SetContent(std::string(body));
+        if (http->Open("POST", "https://hava.shoptimize.com.tr/log")) {
+            ESP_LOGI(TAG, "Teshis raporu gonderildi (%d)", http->GetStatusCode());
+            http->Close();
+        } else {
+            ESP_LOGW(TAG, "Teshis raporu gonderilemedi");
+        }
+    }
+
     bool TryFetchWeather(const char* url, std::string& body) {
         auto network = GetNetwork();
         if (network == nullptr) {
@@ -763,6 +784,15 @@ private:
         sd_hooks.set_server = [this](bool on) { SetSdServerEnabled(on); };
         sd_hooks.server_url = [this]() { return WifiManager::GetInstance().GetIpAddress(); };
         sd_hooks.list_images = [this]() { return SdImageList(); };
+        settings_display->SetDiagnosticReporter([this](const std::string& text) {
+            // Ag islemi LVGL/ana gorevde bloklamasin diye kisa omurlu gorev.
+            auto* copy = new std::string(text);
+            xTaskCreate([](void* p) {
+                std::unique_ptr<std::string> body(static_cast<std::string*>(p));
+                PostDiagnostic(*body);
+                vTaskDelete(nullptr);
+            }, "teshis", 4096, copy, 2, nullptr);
+        });
         settings_display->SetSdHooks(std::move(sd_hooks));
 
         panel_display_ = settings_display;

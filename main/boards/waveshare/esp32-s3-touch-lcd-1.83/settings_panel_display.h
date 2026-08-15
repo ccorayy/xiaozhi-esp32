@@ -111,6 +111,12 @@ public:
 
     void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
 
+    // GECICI TESHIS: raporu board sunucuya gonderiyor (ekran guvenilir degil,
+    // gelen sohbet mesaji gorunumu degistirip raporu siliyor).
+    void SetDiagnosticReporter(std::function<void(const std::string&)> reporter) {
+        diagnostic_reporter_ = std::move(reporter);
+    }
+
     // GECICI TESHIS: galeri siyah ekran veriyor. Baslik okunabiliyor (en/boy
     // dogru yaziliyor) ama cizim bos. Hangi asamada koptugunu cihazin kendisi
     // soylesin diye acilista karttaki ilk gorseli cozmeyi deniyoruz.
@@ -193,6 +199,9 @@ public:
         }
         summary += line;
         lv_label_set_text(photo_note_, summary.c_str());
+        if (diagnostic_reporter_) {
+            diagnostic_reporter_(summary);
+        }
     }
 
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
@@ -450,6 +459,7 @@ private:
     std::function<void()> on_wifi_config_;
     std::function<void()> on_activity_;
     std::function<std::string()> sd_info_provider_;
+    std::function<void(const std::string&)> diagnostic_reporter_;  // GECICI
 
     // Sayfa 4 - WiFi
     lv_obj_t* wifi_status_label_ = nullptr;
