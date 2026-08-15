@@ -111,6 +111,62 @@ public:
 
     void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
 
+    // GECICI TESHIS: galeri siyah ekran veriyor. Baslik okunabiliyor (en/boy
+    // dogru yaziliyor) ama cizim bos. Hangi asamada koptugunu cihazin kendisi
+    // soylesin diye acilista karttaki ilk gorseli cozmeyi deniyoruz.
+    // Sorun bulununca bu metot ve cagrisi silinecek.
+    void LogImageDecodeSelfTest() {
+        static const char* kTag = "GaleriTest";
+        if (!sd_.list_images) {
+            ESP_LOGW(kTag, "SD kancasi yok");
+            return;
+        }
+        auto files = sd_.list_images();
+        if (files.empty()) {
+            ESP_LOGW(kTag, "Kartta gorsel yok");
+            return;
+        }
+        std::string path = "S:/" + files[0];
+        ESP_LOGI(kTag, "Deneme dosyasi: %s", path.c_str());
+
+        DisplayLockGuard lock(this);
+
+        // 1) Dosya sistemi surucusu dosyayi acabiliyor mu?
+        lv_fs_file_t file;
+        lv_fs_res_t fs_res = lv_fs_open(&file, path.c_str(), LV_FS_MODE_RD);
+        ESP_LOGI(kTag, "1) lv_fs_open -> %d (0=OK)", static_cast<int>(fs_res));
+        if (fs_res == LV_FS_RES_OK) {
+            uint8_t head[8] = {};
+            uint32_t read = 0;
+            lv_fs_read(&file, head, sizeof(head), &read);
+            ESP_LOGI(kTag, "   ilk %u bayt: %02X %02X %02X %02X %02X %02X %02X %02X",
+                     static_cast<unsigned>(read), head[0], head[1], head[2], head[3], head[4],
+                     head[5], head[6], head[7]);
+            lv_fs_close(&file);
+        }
+
+        // 2) Baslik okunuyor mu? (Bu asamanin calistigini zaten biliyoruz.)
+        lv_image_header_t header = {};
+        lv_result_t info_res = lv_image_decoder_get_info(path.c_str(), &header);
+        ESP_LOGI(kTag, "2) get_info -> %d (0=OK), %dx%d, renk bicimi %d",
+                 static_cast<int>(info_res), static_cast<int>(header.w),
+                 static_cast<int>(header.h), static_cast<int>(header.cf));
+        if (info_res != LV_RESULT_OK) {
+            return;
+        }
+
+        // 3) Asil soru: tam cozme. Siyah ekranin sebebi burada gorunmeli.
+        lv_image_decoder_dsc_t dsc = {};
+        lv_image_decoder_args_t args = {};
+        lv_result_t open_res = lv_image_decoder_open(&dsc, path.c_str(), &args);
+        ESP_LOGI(kTag, "3) decoder_open -> %d (0=OK)", static_cast<int>(open_res));
+        if (open_res == LV_RESULT_OK) {
+            ESP_LOGI(kTag, "   cozuldu, draw_buf %s",
+                     dsc.decoded != nullptr ? "VAR" : "YOK");
+            lv_image_decoder_close(&dsc);
+        }
+    }
+
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
     void SetOnAlarmRing(std::function<void()> callback) { on_alarm_ring_ = std::move(callback); }
 

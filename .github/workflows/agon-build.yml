@@ -33,6 +33,12 @@ jobs:
             --name esp32-s3-touch-lcd-1.83 \
             --language tr-TR
 
+      # sdkconfig_append gercekten uygulandi mi? Kconfig, bagimliligi
+      # karsilanmayan bir secenegi sessizce dusuruyor; ciktida gormek lazim.
+      - name: LVGL ayarlarini goster
+        shell: bash
+        run: grep -E "LV_CACHE_DEF_SIZE|LV_IMAGE_HEADER_CACHE|LV_USE_TJPGD|LV_USE_LODEPNG|LV_USE_FS_STDIO|LV_FS_STDIO|LV_USE_LOG|LV_USE_DRAW_SW" sdkconfig || echo "HICBIRI YOK"
+
       # Cihazdaki panik/watchdog ciktisini okuyabilmek icin. ELF olmadan
       # backtrace sadece sayi yigini.
       - name: Backtrace coz

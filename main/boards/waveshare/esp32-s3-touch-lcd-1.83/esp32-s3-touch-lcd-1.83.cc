@@ -517,6 +517,30 @@ private:
 
     esp_timer_handle_t weather_timer_ = nullptr;
 
+    // GECICI TESHIS: galeri siyah ekran veriyor. Acilistan 20 sn sonra
+    // karttaki ilk gorseli cozmeyi deneyip sonucu seri porta yaziyoruz.
+    // Kullanicinin ekrana dokunmasini beklemeden nerede koptugunu gorelim.
+    esp_timer_handle_t gallery_test_timer_ = nullptr;
+
+    void InitializeGallerySelfTest() {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            auto* self = static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg);
+            // Cozme islemi esp_timer gorevinin kucuk yiginina gore agir.
+            Application::GetInstance().Schedule([self]() {
+                if (self->panel_display_ != nullptr) {
+                    self->panel_display_->LogImageDecodeSelfTest();
+                }
+            });
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "galeri_test";
+        if (esp_timer_create(&args, &gallery_test_timer_) == ESP_OK) {
+            esp_timer_start_once(gallery_test_timer_, 20 * 1000 * 1000LL);
+        }
+    }
+
     void InitializeWeather() {
         esp_timer_create_args_t args = {};
         args.callback = [](void* arg) {
@@ -853,6 +877,7 @@ public:
         InitializeTouch();
         InitializeButtons();
         InitializeWeather();
+        InitializeGallerySelfTest();
         InitializeSdServer();
         InitializeTools();
         GetBacklight()->RestoreBrightness();
