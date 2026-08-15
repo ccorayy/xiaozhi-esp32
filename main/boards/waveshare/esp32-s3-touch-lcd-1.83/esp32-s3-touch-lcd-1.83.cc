@@ -504,12 +504,14 @@ private:
     }
 
     // ------------------------------------------------------------------
-    // Hava durumu - Pi'deki arama servisinin /weather ucundan
+    // Hava durumu - arama servisinin /weather ucundan
     // ------------------------------------------------------------------
-    // Once genel adres (cihaz disarida da calissin), olmazsa ev agindaki IP.
+    // Servis Raspberry Pi'den Hetzner'e tasindi (bkz. CLAUDE.md §10). Artik
+    // tek adres yetiyor: sunucu acik internette, cihaz evde de disarida da
+    // ayni yere gidiyor. Eskiden ev agindaki IP'ye dusen yedek yol vardi,
+    // sunucu evde olmadigi icin anlamini yitirdi.
     // Servis yaniti onbellekli oldugu icin bu istekler Gemini aramasi harcamaz.
-    static constexpr const char* kWeatherUrlPublic = "https://hava.agonesp32.keenetic.pro/weather";
-    static constexpr const char* kWeatherUrlLan = "http://192.168.1.80:5080/weather";
+    static constexpr const char* kWeatherUrl = "https://hava.shoptimize.com.tr/weather";
     static constexpr int kWeatherFirstDelayMs = 30 * 1000;      // ag otursun
     static constexpr int kWeatherIntervalMs = 20 * 60 * 1000;   // 20 dakika
 
@@ -554,8 +556,7 @@ private:
 
     void FetchWeather() {
         std::string body;
-        if (!TryFetchWeather(kWeatherUrlPublic, body) &&
-            !TryFetchWeather(kWeatherUrlLan, body)) {
+        if (!TryFetchWeather(kWeatherUrl, body)) {
             ESP_LOGW(TAG, "Hava durumu alinamadi");
             return;
         }

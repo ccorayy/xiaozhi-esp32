@@ -143,9 +143,9 @@ varsayımıyla X'e geçtim ve çalışan davranışı bozdum. Doğrusu Z + histe
 
 ### Hava durumu ✅ / Alarm + RTC (PCF85063) — cihazda test edilmedi
 
-- **Hava durumu**: Pi'deki `mcp-search` servisinin `/weather` ucundan (önce KeenDNS adresi,
-  olmazsa LAN IP), açılıştan 30 sn sonra + 20 dakikada bir. Sunucu tarafı 20 dk önbellekli,
-  her istek Gemini araması harcamıyor.
+- **Hava durumu**: `mcp-search` servisinin `/weather` ucundan (`https://hava.shoptimize.com.tr/weather`),
+  açılıştan 30 sn sonra + 20 dakikada bir. Sunucu tarafı 20 dk önbellekli, her istek Gemini araması
+  harcamıyor. Servis Hetzner'e taşınınca tek adres kaldı; eski LAN yedeği anlamını yitirdi.
 - **RTC**: `rtc_pcf85063.h`, adres `0x51`. Sistem saati normalde `ota.cc`'deki "Server-Time"
   yanıtından geliyor (**timezone_offset eklenmiş halde**, yani sistem saati yerel duvar saati;
   `TZ` kurulu değil, `localtime` = UTC = yerel). Ağ yokken cihaz 1970'te kalıyordu; artık
@@ -347,20 +347,44 @@ Canlı veri = MCP aracı meselesi, model meselesi değil.
 
 ---
 
-## 10. Kendi sunucusu — kurulu ve çalışıyor (12 Ağu 2026)
+## 10. Kendi sunucusu — Hetzner'de kurulu ve çalışıyor (15 Ağu 2026)
 
 **Cihaz artık xiaozhi.me'ye bağlanmıyor.** Konsoldaki ajan ayarları, hafıza kayıtları ve model
-seçimi devre dışı; her şey Pi'deki config dosyasından geliyor.
+seçimi devre dışı; her şey sunucudaki config dosyasından geliyor.
+
+> **Raspberry Pi 5 kurulumu emekli edildi (15 Ağu 2026).** Ev ağına ve KeenDNS'e bağımlıydı;
+> Pi kapanınca asistan tamamen susuyordu. Her şey kullanıcının zaten sahip olduğu Hetzner
+> kutusuna taşındı. Pi'deki `~/xiaozhi-server` + `~/xiaozhi-mcp-search` ağacı **olduğu gibi**
+> kopyalandı (yalnızca adresler ve port yayınlama değişti), o yüzden aşağıdaki tuzak tablosu
+> hâlâ geçerli.
 
 | | |
 |---|---|
-| Donanım | Raspberry Pi 5, 8 GB, NVMe SSD, Debian 13 (trixie), aarch64 |
-| Adres | `192.168.1.80` (WiFi "Pars" 5 GHz, MAC `88:A2:9E:86:C9:3F`) — modemde sabitlendi (Keenetic → İstemci Listesi → cihazı kaydet + sabit IP) |
-| SSH | `ssh -i ~/.ssh/pi_xiaozhi pi@192.168.1.80` — anahtar bu makinede. **`sudo` şifre ister** (kurulumda şifresiz sanılmıştı, masaüstünden gelen önbellek yanıltmıştı). Gerek de yok: `pi` kullanıcısı `docker` grubunda, `docker` komutları sudo'suz çalışır |
-| Dizin | `~/xiaozhi-server/` — `docker-compose.yml`, `data/.config.yaml`, `data/tr-prompt.txt`, `patches/` |
-| İmaj | `ghcr.io/xinnan-tech/xiaozhi-esp32-server:server_latest` (arm64, 3.08 GB), minimal kurulum |
-| Portlar | 8000 websocket, 8003 HTTP/OTA |
-| Cihaz ayarı | `ota_url` = `http://192.168.1.80:8003/xiaozhi/ota/` (WiFi portal → Advanced) |
+| Donanım | Hetzner CPX22 `shoptimize-prod`, 2 vCPU / 4 GB / 80 GB, Ubuntu 24.04, x86_64, Nuremberg |
+| Adres | `178.104.94.230` — **üretim sunucusu**, üstünde Coolify v4 + shoptimize/WB OTP uygulamaları var |
+| SSH | `ssh root@178.104.94.230` — anahtar bu makinede (`~/.ssh/id_ed25519`) |
+| Dizin | `/opt/xiaozhi/` — `xiaozhi-server/` ve `xiaozhi-mcp-search/`. Coolify'ın kendi dizinlerine dokunulmadı |
+| Bellek | xiaozhi 148 MB + mcp-search 72 MB ≈ **220 MB**. (Eski nottaki "~2 GB" imaj boyutuydu, RAM değil.) Kutuda ~1 GB boşta kalıyor |
+| Yayın | Host portu **açılmıyor**. Coolify'ın Traefik'i (`coolify` ağı) TLS'i sonlandırıyor, sertifika Let's Encrypt |
+| Cihaz ayarı | `ota_url` = `https://ota.shoptimize.com.tr/xiaozhi/ota/` (WiFi portal → Advanced) |
+
+Alan adları — hepsi Hostinger'da `shoptimize.com.tr` bölgesinde A kaydı, `178.104.94.230`:
+
+| Alan adı | Konteyner portu | Ne |
+|---|---|---|
+| `ses.shoptimize.com.tr` | 8080 | websocket (`wss://.../xiaozhi/v1/`) |
+| `ota.shoptimize.com.tr` | 8090 | cihaz kaydı / firmware güncelleme |
+| `hava.shoptimize.com.tr` | 8100 | arama + hava durumu (`/weather`) |
+
+⚠️ Coolify kurulumunda dikkat edilenler:
+- `docker-compose.yml`'de **`ports:` yok**. Traefik 80/443/8080'i zaten tutuyor; host portu açmak hem
+  çakışırdı hem de açık internete şifresiz uç koyardı.
+- Yönlendirme ara katmanı **kendimizin** (`xiaozhi-https`). Coolify'ın `redirect-to-https`'i başka bir
+  uygulamanın etiketinde tanımlı; o uygulama silinirse bizimki de kırılırdı.
+- Gemini anahtarı compose içinde değil, `secrets.env` dosyasında (chmod 600).
+- **Sertifika, DNS kaydından önce istenirse Traefik NXDOMAIN alıp uzun süre yeniden denemiyor.**
+  DNS yayıldıktan sonra `docker compose up -d --force-recreate` ile router'ları yeniden kaydettir;
+  sertifika 20 saniyede geliyor. Coolify'ın proxy'sini yeniden başlatmaya gerek yok (üretim kesilir).
 
 Sağlayıcılar: **ASR** GroqASR (`whisper-large-v3-turbo`) — Türkçeyi kusursuz tanıyor.
 **LLM** Groq `openai/gpt-oss-120b`. **TTS** EdgeTTS `tr-TR-EmelNeural`. Hafıza kapalı.
@@ -384,7 +408,7 @@ Model seçerken denenenler: `llama-3.3-70b` Türkçesi bozuk; `qwen3.6` cevaba `
 
 ### Canlı veri — MCP arama servisi ✅ (12 Ağu 2026)
 
-İkinci bir konteyner: `~/xiaozhi-mcp-search/` (compose'a `mcp-search` servisi olarak eklendi).
+İkinci bir konteyner: `/opt/xiaozhi/xiaozhi-mcp-search/` (compose'a `mcp-search` servisi olarak eklendi).
 `web_search` adlı tek bir MCP aracı sunuyor; içeride **Gemini'nin yerleşik Google araması**
 (`tools:[{google_search:{}}]`) çağrılıyor ve sonuç sesli okunmaya uygun biçimde dönüyor.
 xiaozhi'ye `data/.mcp_server_settings.json` ile tanıtıldı (`http://mcp-search:8100/mcp`,
@@ -407,7 +431,7 @@ Neden ayrı servis — bunlar test edildi:
 ### Bilinen eksikler
 - **Yama kırılgan.** `patches/llm_openai.py` imajın içindeki dosyanın üzerine biniyor; imaj
   güncellenirse yeniden üretilmeli (komut `docker-compose.yml` içinde yorumda).
-- Cihaz ev ağına bağımlı; dışarıdan erişim için Cloudflare Tunnel / Tailscale gerekir.
+- Sunucu üretim kutusunu paylaşıyor; RAM'in ~1 GB'ı boşta, ağır bir şey eklerken ölç.
 - Sunucudaki API anahtarları `data/.config.yaml` içinde düz metin (chmod 600). **Depoya girmemeli.**
 
 Geri dönüş: WiFi portal → Advanced → `ota_url` alanını boşalt; cihaz `api.tenclass.net`'e döner.
