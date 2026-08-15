@@ -191,7 +191,12 @@ public:
             lv_refr_now(nullptr);
             ESP_LOGI(kTag, "cizim sonrasi LVGL: %s",
                      lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
-            snprintf(line, sizeof(line), "CIZIM: %.90s",
+            // Olculer de rapora girsin: cozme basarili ama ekran bossa sorun
+            // yerlesimdedir, cevap bu sayilarda.
+            snprintf(line, sizeof(line), "img %dx%d olcek %d\nCIZIM: %.70s",
+                     static_cast<int>(lv_obj_get_width(photo_image_)),
+                     static_cast<int>(lv_obj_get_height(photo_image_)),
+                     static_cast<int>(lv_image_get_scale(photo_image_)),
                      lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
         } else {
             snprintf(line, sizeof(line), "CIZIM: denenmedi");
@@ -912,10 +917,16 @@ private:
             return;
         }
 
+        // ⚠️ SIRA ONEMLI. LV_IMAGE_ALIGN_CONTAIN olcegi, kaynak atandigi ANDAKI
+        // widget boyutundan hesaplaniyor. Gorunum hala gizliyken atarsak nesnenin
+        // hesaplanmis boyutu yok, olcek sifir cikiyor ve hicbir sey cizilmiyor -
+        // ustelik cozucu basarili oldugu icin tek bir uyari bile dusmuyor.
+        // Once gorunur yap, yerlesimi zorla, sonra kaynagi ver.
+        ShowView(View::kPhoto);
+        lv_obj_update_layout(view_photo_);
         lv_image_set_src(photo_image_, photo_path_.c_str());
         lv_label_set_text_fmt(photo_note_, "%s  %dx%d", gallery_files_[index].c_str(),
                               static_cast<int>(header.w), static_cast<int>(header.h));
-        ShowView(View::kPhoto);
     }
 
     // ------------------------------------------------------------------
