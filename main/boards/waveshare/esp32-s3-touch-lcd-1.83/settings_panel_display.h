@@ -155,16 +155,15 @@ public:
             return;
         }
 
-        // 3) Asil soru: tam cozme. Siyah ekranin sebebi burada gorunmeli.
-        lv_image_decoder_dsc_t dsc = {};
-        lv_image_decoder_args_t args = {};
-        lv_result_t open_res = lv_image_decoder_open(&dsc, path.c_str(), &args);
-        ESP_LOGI(kTag, "3) decoder_open -> %d (0=OK)", static_cast<int>(open_res));
-        if (open_res == LV_RESULT_OK) {
-            ESP_LOGI(kTag, "   cozuldu, draw_buf %s",
-                     dsc.decoded != nullptr ? "VAR" : "YOK");
-            lv_image_decoder_close(&dsc);
-        }
+        // 3) Asil soru: tam cozme. lv_image_decoder_open'i dogrudan cagiramiyoruz
+        // (LVGL 9'da tanimlayici yapilar ozel baslikta, disaridan eksik tip).
+        // Onun yerine gercek yolu yuruyoruz: gorseli ekrana koyup cizimi
+        // zorluyoruz. Cozucu patlarsa LVGL kendi uyarisini seri porta yaziyor
+        // (LV_USE_LOG + LV_LOG_PRINTF bu is icin acildi).
+        ESP_LOGI(kTag, "3) cizim zorlaniyor - asagida LVGL uyarisi varsa sebep odur");
+        ShowPhoto(0);
+        lv_refr_now(nullptr);
+        ESP_LOGI(kTag, "3) cizim bitti");
     }
 
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
