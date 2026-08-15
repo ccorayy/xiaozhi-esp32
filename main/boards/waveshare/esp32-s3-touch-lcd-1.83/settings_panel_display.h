@@ -122,7 +122,7 @@ public:
     // Sorun bulununca bu metot, kancasi ve LV_USE_LOG kaldirilacak.
     void LogImageDecodeSelfTest() {
         static const char* kTag = "GaleriTest";
-        char summary[320];
+        char summary[512];
         int used = 0;
 
         if (!sd_.list_images) {
@@ -134,53 +134,58 @@ public:
             ESP_LOGW(kTag, "Kartta gorsel yok");
             return;
         }
-        std::string path = "S:/" + files[0];
-        ESP_LOGI(kTag, "Deneme dosyasi: %s", path.c_str());
 
         DisplayLockGuard lock(this);
-        lvgl_message_[0] = '\0';  // bu testte olusan uyariyi yakalayalim
 
-        // 1) Dosya sistemi surucusu dosyayi acabiliyor mu?
-        lv_fs_file_t file;
-        lv_fs_res_t fs_res = lv_fs_open(&file, path.c_str(), LV_FS_MODE_RD);
-        uint8_t head[8] = {};
-        uint32_t read = 0;
-        if (fs_res == LV_FS_RES_OK) {
-            lv_fs_read(&file, head, sizeof(head), &read);
-            lv_fs_close(&file);
+        // DIKKAT: lv_result_t'de LV_RESULT_INVALID=0, LV_RESULT_OK=1.
+        // Ilk surumde "0=OK" yazmisim, tam tersi. lv_fs_res_t ise 0=OK.
+        int drawable = -1;
+        size_t count = files.size() < 4 ? files.size() : 4;
+        for (size_t i = 0; i < count; i++) {
+            std::string path = "S:/" + files[i];
+            lvgl_message_[0] = '\0';
+
+            uint8_t head[4] = {};
+            uint32_t read = 0;
+            lv_fs_file_t file;
+            if (lv_fs_open(&file, path.c_str(), LV_FS_MODE_RD) == LV_FS_RES_OK) {
+                lv_fs_read(&file, head, sizeof(head), &read);
+                lv_fs_close(&file);
+            }
+
+            lv_image_header_t header = {};
+            bool info_ok = lv_image_decoder_get_info(path.c_str(), &header) == LV_RESULT_OK;
+            if (info_ok && drawable < 0) {
+                drawable = static_cast<int>(i);
+            }
+
+            ESP_LOGI(kTag, "%s: %02X%02X info=%s %dx%d | LVGL: %s", files[i].c_str(), head[0],
+                     head[1], info_ok ? "OK" : "HATA", static_cast<int>(header.w),
+                     static_cast<int>(header.h),
+                     lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
+            used += snprintf(summary + used, sizeof(summary) - used, "%.11s %02X%02X %s %dx%d\n%s\n",
+                             files[i].c_str(), head[0], head[1], info_ok ? "OK" : "HATA",
+                             static_cast<int>(header.w), static_cast<int>(header.h),
+                             lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
+            if (used >= static_cast<int>(sizeof(summary)) - 80) {
+                break;
+            }
         }
-        ESP_LOGI(kTag, "1) lv_fs_open -> %d (0=OK), ilk %u bayt: %02X %02X %02X %02X",
-                 static_cast<int>(fs_res), static_cast<unsigned>(read), head[0], head[1], head[2],
-                 head[3]);
-        used += snprintf(summary + used, sizeof(summary) - used, "1) fs_open=%d  %02X%02X%02X%02X\n",
-                         static_cast<int>(fs_res), head[0], head[1], head[2], head[3]);
 
-        // 2) Baslik okunuyor mu? (Bu asamanin calistigini zaten biliyoruz.)
-        lv_image_header_t header = {};
-        lv_result_t info_res = lv_image_decoder_get_info(path.c_str(), &header);
-        ESP_LOGI(kTag, "2) get_info -> %d (0=OK), %dx%d, renk bicimi %d",
-                 static_cast<int>(info_res), static_cast<int>(header.w),
-                 static_cast<int>(header.h), static_cast<int>(header.cf));
-        used += snprintf(summary + used, sizeof(summary) - used, "2) info=%d %dx%d cf=%d\n",
-                         static_cast<int>(info_res), static_cast<int>(header.w),
-                         static_cast<int>(header.h), static_cast<int>(header.cf));
-        if (info_res != LV_RESULT_OK) {
-            lv_label_set_text(photo_note_, summary);
+        // Basligi okunabilen ilk dosyayi gercekten cizdir: cozucu tam cozmede
+        // patlarsa uyarisini burada birakir.
+        if (drawable >= 0) {
+            lvgl_message_[0] = '\0';
+            ShowPhoto(drawable);
+            lv_refr_now(nullptr);
+            ESP_LOGI(kTag, "cizim sonrasi LVGL: %s",
+                     lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
+            snprintf(summary + used, sizeof(summary) - used, "CIZIM: %s",
+                     lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
+        } else {
+            snprintf(summary + used, sizeof(summary) - used, "CIZIM: denenmedi");
             ShowView(View::kPhoto);
-            return;
         }
-
-        // 3) Asil soru: tam cozme. lv_image_decoder_open'i dogrudan cagiramiyoruz
-        // (LVGL 9'da tanimlayici yapilar ozel baslikta, disaridan eksik tip).
-        // Onun yerine gercek yolu yuruyoruz: gorseli ekrana koyup cizimi
-        // zorluyoruz. Cozucu patlarsa LVGL uyarisini lvgl_message_'a birakiyor.
-        ESP_LOGI(kTag, "3) cizim zorlaniyor");
-        ShowPhoto(0);
-        lv_refr_now(nullptr);
-        ESP_LOGI(kTag, "3) cizim bitti. LVGL: %s",
-                 lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
-        snprintf(summary + used, sizeof(summary) - used, "3) LVGL: %s",
-                 lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
         lv_label_set_text(photo_note_, summary);
     }
 
