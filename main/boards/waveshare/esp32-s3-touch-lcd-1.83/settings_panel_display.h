@@ -122,8 +122,14 @@ public:
     // Sorun bulununca bu metot, kancasi ve LV_USE_LOG kaldirilacak.
     void LogImageDecodeSelfTest() {
         static const char* kTag = "GaleriTest";
-        char summary[512];
-        int used = 0;
+        // ⚠️ Onceki surumde bunlar sabit bir char[512] ve elle ilerleyen bir
+        // "used" sayaci ile yaziliyordu. snprintf yazdigi degil YAZACAGI
+        // uzunlugu donduruyor; uzun LVGL uyarilariyla sayac tamponu asiyor ve
+        // sonraki snprintf tamponun disina yaziyordu. Cihaz 20. saniyede
+        // cokuyordu - yani teshis kodu teshis edilecek seyi gizliyordu.
+        // std::string ile o sinif hata tamamen kalkiyor.
+        std::string summary;
+        char line[192];
 
         if (!sd_.list_images) {
             ESP_LOGW(kTag, "SD kancasi yok");
@@ -163,13 +169,12 @@ public:
                      head[1], info_ok ? "OK" : "HATA", static_cast<int>(header.w),
                      static_cast<int>(header.h),
                      lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
-            used += snprintf(summary + used, sizeof(summary) - used, "%.11s %02X%02X %s %dx%d\n%s\n",
-                             files[i].c_str(), head[0], head[1], info_ok ? "OK" : "HATA",
-                             static_cast<int>(header.w), static_cast<int>(header.h),
-                             lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
-            if (used >= static_cast<int>(sizeof(summary)) - 80) {
-                break;
-            }
+            // Ekran dar; dosya adi ve uyari kirpiliyor.
+            snprintf(line, sizeof(line), "%.11s %02X%02X %s %dx%d\n%.60s\n", files[i].c_str(),
+                     head[0], head[1], info_ok ? "OK" : "HATA", static_cast<int>(header.w),
+                     static_cast<int>(header.h),
+                     lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
+            summary += line;
         }
 
         // Basligi okunabilen ilk dosyayi gercekten cizdir: cozucu tam cozmede
@@ -180,13 +185,14 @@ public:
             lv_refr_now(nullptr);
             ESP_LOGI(kTag, "cizim sonrasi LVGL: %s",
                      lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
-            snprintf(summary + used, sizeof(summary) - used, "CIZIM: %s",
+            snprintf(line, sizeof(line), "CIZIM: %.90s",
                      lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
         } else {
-            snprintf(summary + used, sizeof(summary) - used, "CIZIM: denenmedi");
+            snprintf(line, sizeof(line), "CIZIM: denenmedi");
             ShowView(View::kPhoto);
         }
-        lv_label_set_text(photo_note_, summary);
+        summary += line;
+        lv_label_set_text(photo_note_, summary.c_str());
     }
 
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
