@@ -389,6 +389,7 @@ private:
     lv_obj_t* brightness_value_label_ = nullptr;
     lv_obj_t* brightness_slider_ = nullptr;
     lv_obj_t* theme_switch_ = nullptr;
+    lv_obj_t* face_switch_ = nullptr;
     lv_obj_t* close_button_ = nullptr;
     lv_obj_t* close_button_label_ = nullptr;
 
@@ -558,6 +559,7 @@ private:
         LoadAlarm();
         view_sd_ = CreateAppView("SD Kart");
         BuildSdTile(view_sd_);
+        LoadFacePreference();
         view_gallery_ = CreateAppView("Galeri");
         BuildGalleryTile(view_gallery_);
         view_photo_ = CreateAppView("Gorsel");
@@ -749,6 +751,12 @@ private:
         theme_switch_ = lv_switch_create(theme_row);
         lv_obj_add_flag(theme_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(theme_switch_, ThemeEventCb, LV_EVENT_VALUE_CHANGED, this);
+
+        lv_obj_t* face_row = CreateRow(tile);
+        CreateLabel(face_row, "Segment saat");
+        face_switch_ = lv_switch_create(face_row);
+        lv_obj_add_flag(face_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_event_cb(face_switch_, FaceEventCb, LV_EVENT_VALUE_CHANGED, this);
 
         close_button_ = CreateButton(tile, "Menu", &close_button_label_);
         lv_obj_add_event_cb(close_button_, CloseEventCb, LV_EVENT_CLICKED, this);
@@ -1027,6 +1035,16 @@ private:
         } else {
             lv_obj_remove_state(alarm_switch_, LV_STATE_CHECKED);
         }
+    }
+
+    // Saat yuzu tercihi. Varsayilan segment: yeni tasarimi gormeden
+    // degerlendiremeyiz, eskisi anahtarla bir dokunus uzakta.
+    bool segment_face_ = true;
+
+    void LoadFacePreference() {
+        Settings settings("face", false);
+        segment_face_ = settings.GetBool("segment", true);
+        eyes_.SetSegmentFace(segment_face_);
     }
 
     void LoadAlarm() {
@@ -1490,7 +1508,7 @@ private:
         // OR'lanamiyor, secici tipine cevirmek gerekiyor.
         lv_style_selector_t checked_indicator = static_cast<lv_style_selector_t>(LV_PART_INDICATOR) |
                                                 static_cast<lv_style_selector_t>(LV_STATE_CHECKED);
-        for (lv_obj_t* sw : {theme_switch_, alarm_switch_, sd_server_switch_}) {
+        for (lv_obj_t* sw : {theme_switch_, alarm_switch_, sd_server_switch_, face_switch_}) {
             if (sw == nullptr) {
                 continue;
             }
@@ -1657,6 +1675,12 @@ private:
             lv_obj_add_state(theme_switch_, LV_STATE_CHECKED);
         } else {
             lv_obj_remove_state(theme_switch_, LV_STATE_CHECKED);
+        }
+
+        if (segment_face_) {
+            lv_obj_add_state(face_switch_, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(face_switch_, LV_STATE_CHECKED);
         }
     }
 
@@ -1869,6 +1893,15 @@ private:
         self->SuppressImmediateRing();
         self->SaveAlarm();
         self->RefreshAlarmView();
+    }
+
+    static void FaceEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->NotifyActivity();
+        self->segment_face_ = lv_obj_has_state(self->face_switch_, LV_STATE_CHECKED);
+        self->eyes_.SetSegmentFace(self->segment_face_);
+        Settings settings("face", true);
+        settings.SetBool("segment", self->segment_face_);
     }
 
     static void AlarmSwitchEventCb(lv_event_t* e) {

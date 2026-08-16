@@ -17,6 +17,7 @@
 
 #include "board.h"
 #include "lvgl_theme.h"
+#include "segment_clock.h"
 
 #include <esp_timer.h>
 #include <lvgl.h>
@@ -60,6 +61,10 @@ public:
         CreateEye(right_, kEyeGap / 2);
 
         CreateClock();
+
+        // Ikinci saat yuzu; olculerini ekrandan kendisi turetiyor.
+
+        segment_clock_.Create(root_, lv_obj_get_width(parent), lv_obj_get_height(parent));
         ApplyTheme(theme);
         SetExpression("neutral");
         NotifyActivity();
@@ -103,6 +108,7 @@ public:
         if (clock_weather_ != nullptr) {
             lv_label_set_text(clock_weather_, weather_.c_str());
         }
+        segment_clock_.SetWeather(weather_);
     }
 
     void NotifyActivity() {
@@ -127,6 +133,15 @@ public:
     bool IsClockVisible() const { return clock_visible_; }
 
     // Kabuk (menu/uygulama) acikken yuzu tamamen gizle
+    // Iki saat yuzu var: halkali (ilk tasarim) ve yedi-segment (pocketClock
+    // benzeri). Secim NVS'ten geliyor, board veriyor.
+    void SetSegmentFace(bool on) {
+        segment_face_ = on;
+        if (clock_visible_) {
+            ShowClock(true);  // gorunuru hemen degistir
+        }
+    }
+
     void SetHidden(bool hidden) {
         if (root_ == nullptr) {
             return;
@@ -413,9 +428,16 @@ private:
         if (on) {
             UpdateClock();
             lv_obj_add_flag(eyes_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(clock_, LV_OBJ_FLAG_HIDDEN);
+            // Ikisinden yalnizca secili olan gorunur.
+            segment_clock_.SetHidden(!segment_face_);
+            if (segment_face_) {
+                lv_obj_add_flag(clock_, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_remove_flag(clock_, LV_OBJ_FLAG_HIDDEN);
+            }
         } else {
             lv_obj_add_flag(clock_, LV_OBJ_FLAG_HIDDEN);
+            segment_clock_.SetHidden(true);
             lv_obj_remove_flag(eyes_, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -427,6 +449,7 @@ private:
             // Saat sunucudan gelmemis; bos ekran yerine durumu goster
             lv_label_set_text(clock_time_, "--:--");
             lv_label_set_text(clock_date_, "saat alinamadi");
+            segment_clock_.Update(nullptr);
             return;
         }
         char buf[16];
@@ -452,7 +475,9 @@ private:
             char pil[24];
             snprintf(pil, sizeof(pil), "%%%d%s", level, charging ? " sarj" : "");
             lv_label_set_text(clock_battery_, pil);
+            segment_clock_.SetBattery(level, charging);
         }
+        segment_clock_.Update(t);
     }
 
     LvglTheme* theme_ = nullptr;
@@ -474,6 +499,8 @@ private:
     int64_t last_activity_us_ = 0;
     bool clock_visible_ = false;
     bool force_clock_ = false;
+    bool segment_face_ = true;
+    SegmentClock segment_clock_;
     std::string weather_;
     int tick_count_ = 0;
     int next_blink_ = 4;
