@@ -59,7 +59,7 @@ public:
         int total = 4 * digit_w + 3 * gap + colon_w;
 
         int x = -total / 2;
-        int y = -S(14);
+        int y = -S(10);  // saat blogunun dikey merkezi
         for (int i = 0; i < 4; i++) {
             if (i == 2) {
                 colon_ = MakeColon(face, x, y, colon_w, digit_h, thick);
@@ -73,8 +73,11 @@ public:
         int sec_w = S(kRefSecW);
         int sec_h = S(kRefSecH);
         int sec_thick = std::max(2, S(kRefSecThick));
+        // Saniye saatin sag altina, alt yazi satirinin uzerine oturuyor.
+        // Dikey yeri saat blogundan turetilmiyor; sabit bir referans
+        // noktasindan geliyor ki tarih/hava yazilariyla cakismasin.
         int sec_x = total / 2 - 2 * sec_w - gap;
-        int sec_y = y + digit_h + S(16);
+        int sec_y = S(63);
         for (int i = 0; i < 2; i++) {
             seconds_[i].Create(face, sec_x + i * (sec_w + gap), sec_y, sec_w, sec_h, sec_thick);
         }
@@ -97,10 +100,17 @@ public:
         }
     }
 
+    // Alt satirda tarih ve hava yan yana duruyor; ic panel 207 px ve tam metin
+    // ("24 Parcali bulutlu") tarihle cakisiyor. Bu yuzde yalnizca sicakligi
+    // gosteriyoruz - board metni "24<derece>  Aciklama" biciminde veriyor,
+    // ilk cift bosluktan kesiyoruz.
     void SetWeather(const std::string& text) {
-        if (weather_ != nullptr) {
-            lv_label_set_text(weather_, text.c_str());
+        if (weather_ == nullptr) {
+            return;
         }
+        auto cut = text.find("  ");
+        lv_label_set_text(weather_, cut == std::string::npos ? text.c_str()
+                                                             : text.substr(0, cut).c_str());
     }
 
     void SetBattery(int level, bool charging) {
@@ -159,14 +169,14 @@ private:
     static constexpr int kRefFrameH = 321;
     static constexpr int kRefFaceW = 327;
     static constexpr int kRefFaceH = 232;
-    static constexpr int kRefDigitW = 62;
-    static constexpr int kRefDigitH = 104;
-    static constexpr int kRefThick = 13;
-    static constexpr int kRefDigitGap = 9;
-    static constexpr int kRefColonW = 16;
-    static constexpr int kRefSecW = 26;
-    static constexpr int kRefSecH = 44;
-    static constexpr int kRefSecThick = 6;
+    static constexpr int kRefDigitW = 54;
+    static constexpr int kRefDigitH = 91;
+    static constexpr int kRefThick = 11;
+    static constexpr int kRefDigitGap = 8;
+    static constexpr int kRefColonW = 14;
+    static constexpr int kRefSecW = 24;
+    static constexpr int kRefSecH = 39;
+    static constexpr int kRefSecThick = 5;
 
     // Referanstan alinan palet: buzlu acik mavi, koyu zemin.
     static constexpr uint32_t kBackground = 0x1D1A21;
@@ -182,18 +192,31 @@ private:
     struct Digit {
         lv_obj_t* seg[7] = {};
 
+        // ⚠️ Her basamak KENDI kutusunu aliyor ve segmentler o kutunun icine
+        // LV_ALIGN_TOP_LEFT ile konuyor. Ilk surumde segmentleri dogrudan
+        // panele LV_ALIGN_CENTER ile koyuyordum; merkez hizalama nesnenin
+        // ORTASINI verilen noktaya oturttugu icin yatay segment (7 px) ile
+        // dikey segment (26 px) kendi boylarinin yarisi kadar farkli
+        // kayiyordu ve her rakam ikiye bolunmus gorunuyordu.
         void Create(lv_obj_t* parent, int x, int y, int w, int h, int t) {
-            int vert = (h - t) / 2 - t;      // dikey segment boyu
-            int horiz = w - 2 * t;           // yatay segment boyu
+            box_ = lv_obj_create(parent);
+            lv_obj_remove_style_all(box_);
+            lv_obj_set_size(box_, w, h);
+            lv_obj_align(box_, LV_ALIGN_CENTER, x + w / 2, y);
+            lv_obj_remove_flag(box_, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(box_, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+            int vert = (h - 3 * t) / 2;  // dikey segment boyu
+            int horiz = w - 2 * t;       // yatay segment boyu
             int mid = (h - t) / 2;
-            //            x,          y,        w,      h
-            Make(parent, 0, x + t, y, horiz, t);              // a  ust
-            Make(parent, 1, x + w - t, y + t, t, vert);       // b  sag ust
-            Make(parent, 2, x + w - t, y + mid + t, t, vert); // c  sag alt
-            Make(parent, 3, x + t, y + h - t, horiz, t);      // d  alt
-            Make(parent, 4, x, y + mid + t, t, vert);         // e  sol alt
-            Make(parent, 5, x, y + t, t, vert);               // f  sol ust
-            Make(parent, 6, x + t, y + mid, horiz, t);        // g  orta
+            //          idx      x,        y,           w,      h
+            Make(0, t, 0, horiz, t);              // a  ust
+            Make(1, w - t, t, t, vert);           // b  sag ust
+            Make(2, w - t, mid + t, t, vert);     // c  sag alt
+            Make(3, t, h - t, horiz, t);          // d  alt
+            Make(4, 0, mid + t, t, vert);         // e  sol alt
+            Make(5, 0, t, t, vert);               // f  sol ust
+            Make(6, t, mid, horiz, t);            // g  orta
         }
 
         void Set(int value) {
@@ -217,11 +240,13 @@ private:
         }
 
     private:
-        void Make(lv_obj_t* parent, int index, int x, int y, int w, int h) {
-            lv_obj_t* s = lv_obj_create(parent);
+        lv_obj_t* box_ = nullptr;
+
+        void Make(int index, int x, int y, int w, int h) {
+            lv_obj_t* s = lv_obj_create(box_);
             lv_obj_remove_style_all(s);
             lv_obj_set_size(s, w < 1 ? 1 : w, h < 1 ? 1 : h);
-            lv_obj_align(s, LV_ALIGN_CENTER, x, y);
+            lv_obj_align(s, LV_ALIGN_TOP_LEFT, x, y);
             lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(s, 1, 0);
             lv_obj_remove_flag(s, LV_OBJ_FLAG_SCROLLABLE);
@@ -263,7 +288,8 @@ private:
         lv_obj_t* holder = lv_obj_create(parent);
         lv_obj_remove_style_all(holder);
         lv_obj_set_size(holder, w, h);
-        lv_obj_align(holder, LV_ALIGN_CENTER, x, y);
+        // Digit kutusuyla ayni kural: gelen x sol kenar, hizalama merkezden.
+        lv_obj_align(holder, LV_ALIGN_CENTER, x + w / 2, y);
         lv_obj_remove_flag(holder, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(holder, LV_OBJ_FLAG_EVENT_BUBBLE);
         for (int i = 0; i < 2; i++) {
