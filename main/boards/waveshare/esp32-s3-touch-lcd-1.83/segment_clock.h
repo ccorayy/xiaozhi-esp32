@@ -47,14 +47,14 @@ public:
         const int right = width - kMargin;
 
         // --- ust serit: alarm gostergesi (referanstaki kirmizi E-SHOCK yeri)
-        alarm_dot_ = MakeBlock(root_, left, 10, 8, 8, kFaint);
+        alarm_dot_ = MakeBlock(root_, left, 10, 8, 8, kRedDim);
         alarm_text_ = MakeLabel(root_, left + 14, 6, kSmall(), kFaint);
         lv_label_set_text(alarm_text_, "ALARM YOK");
 
         // --- sol sutun: etiketli mini kutular (referanstaki ALM / CHR)
-        MakeTag(left, 30, "PIL");
+        pil_tag_ = MakeTag(left, 30, "PIL", kGreen);
         battery_ = MakeLabel(root_, left + kTagW + 6, 32, kSmall(), kInk);
-        MakeTag(left, 54, "SES");
+        MakeTag(left, 54, "SES", kAccent);
         volume_ = MakeLabel(root_, left + kTagW + 6, 56, kSmall(), kInk);
 
         // --- sag ust: segment tarih, referanstaki "19-03" gibi gun-ay
@@ -63,14 +63,17 @@ public:
         int date_x = right - date_w;
         for (int i = 0; i < 4; i++) {
             int x = date_x + i * (dw + dg) + (i >= 2 ? dash : 0);
-            date_digits_[i].Create(root_, x, 28, dw, dh, dt);
+            date_digits_[i].Create(root_, x, 28, dw, dh, dt, kAccent, kCyanDim);
         }
-        MakeBlock(root_, date_x + 2 * (dw + dg) + 1, 28 + dh / 2 - 1, 5, 3, kInk);
+        MakeBlock(root_, date_x + 2 * (dw + dg) + 1, 28 + dh / 2 - 1, 5, 3, kAccent);
 
         // --- gun adi: buyuk, saga yasli
         day_ = MakeLabel(root_, left, 54, kLarge(), kInk);
         lv_obj_set_width(day_, right - left);
         lv_obj_set_style_text_align(day_, LV_TEXT_ALIGN_RIGHT, 0);
+
+        // Referanstaki mor ayirici cizgi
+        MakeBlock(root_, right - 88, 80, 88, 2, kViolet);
 
         // --- buyuk saat + ust simge saniye (referansta saatin sag ustunde)
         int time_w = 4 * kDigitW + 3 * kDigitGap + kColonW;
@@ -86,7 +89,8 @@ public:
         }
         x += kSecPad - kDigitGap;
         for (int i = 0; i < 2; i++) {
-            seconds_[i].Create(root_, x + i * (kSecW + kSecGap), kTimeY, kSecW, kSecH, kSecT);
+            seconds_[i].Create(root_, x + i * (kSecW + kSecGap), kTimeY, kSecW, kSecH, kSecT,
+                               kAmber, kAmberDim);
         }
 
         // --- saatin altinda: sicaklik solda, tam tarih sagda
@@ -129,7 +133,15 @@ public:
             return;
         }
         lv_label_set_text_fmt(battery_, "%d%%%s", level, charging ? " +" : "");
-        lv_obj_set_style_text_color(battery_, lv_color_hex(level <= 20 ? kRed : kInk), 0);
+        uint32_t color = charging ? kAccent : (level <= 20 ? kRed : (level <= 50 ? kYellow : kGreen));
+        lv_obj_set_style_text_color(battery_, lv_color_hex(color), 0);
+        if (pil_tag_ != nullptr) {
+            lv_obj_set_style_border_color(pil_tag_, lv_color_hex(color), 0);
+            lv_obj_t* label = lv_obj_get_child(pil_tag_, 0);
+            if (label != nullptr) {
+                lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+            }
+        }
     }
 
     void SetVolume(int volume) {
@@ -149,7 +161,7 @@ public:
         } else {
             lv_label_set_text(alarm_text_, "ALARM YOK");
             lv_obj_set_style_text_color(alarm_text_, lv_color_hex(kFaint), 0);
-            lv_obj_set_style_bg_color(alarm_dot_, lv_color_hex(kFaint), 0);
+            lv_obj_set_style_bg_color(alarm_dot_, lv_color_hex(kRedDim), 0);
         }
     }
 
@@ -221,6 +233,15 @@ private:
     static constexpr uint32_t kMuted = 0x9AA7AC;
     static constexpr uint32_t kFaint = 0x4A5459;
     static constexpr uint32_t kRed = 0xE02020;
+    // Referanstaki renk vurgulari: kehribar saniye, mor ayirici, pil icin
+    // yesil/sari/kirmizi kademe.
+    static constexpr uint32_t kRedDim = 0x3A1010;
+    static constexpr uint32_t kAmber = 0xFFB020;
+    static constexpr uint32_t kAmberDim = 0x241A08;
+    static constexpr uint32_t kCyanDim = 0x0A1E22;
+    static constexpr uint32_t kViolet = 0x8B5CF6;
+    static constexpr uint32_t kGreen = 0x35D07F;
+    static constexpr uint32_t kYellow = 0xFFC53D;
 
     static const lv_font_t* kSmall() { return &font_noto_sans_basic_14_1; }
     static const lv_font_t* kLarge() { return &font_noto_sans_basic_20_4; }
@@ -234,8 +255,13 @@ private:
     struct Digit {
         lv_obj_t* seg[7] = {};
         lv_obj_t* box = nullptr;
+        uint32_t on_color = kInk;
+        uint32_t off_color = kDim;
 
-        void Create(lv_obj_t* parent, int x, int y, int w, int h, int t) {
+        void Create(lv_obj_t* parent, int x, int y, int w, int h, int t, uint32_t on = kInk,
+                    uint32_t off = kDim) {
+            on_color = on;
+            off_color = off;
             box = lv_obj_create(parent);
             lv_obj_remove_style_all(box);
             lv_obj_set_size(box, w, h);
@@ -289,7 +315,7 @@ private:
 
         void Paint(int index, bool on) {
             if (seg[index] != nullptr) {
-                lv_obj_set_style_bg_color(seg[index], lv_color_hex(on ? kInk : kDim), 0);
+                lv_obj_set_style_bg_color(seg[index], lv_color_hex(on ? on_color : off_color), 0);
             }
         }
     };
@@ -318,13 +344,13 @@ private:
 
     // Referanstaki "ALM" / "CHR" kutulari: ince camgobegi kenarlik, icinde
     // kisa etiket. Deger kutunun saginda ayri yazi olarak duruyor.
-    void MakeTag(int x, int y, const char* text) {
+    lv_obj_t* MakeTag(int x, int y, const char* text, uint32_t color) {
         lv_obj_t* box = lv_obj_create(root_);
         lv_obj_remove_style_all(box);
         lv_obj_set_size(box, kTagW, kTagH);
         lv_obj_align(box, LV_ALIGN_TOP_LEFT, x, y);
         lv_obj_set_style_border_width(box, 1, 0);
-        lv_obj_set_style_border_color(box, lv_color_hex(kAccent), 0);
+        lv_obj_set_style_border_color(box, lv_color_hex(color), 0);
         lv_obj_set_style_radius(box, 2, 0);
         lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -332,8 +358,10 @@ private:
         lv_obj_t* label = lv_label_create(box);
         lv_label_set_text(label, text);
         lv_obj_set_style_text_font(label, kSmall(), 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(kAccent), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
         lv_obj_center(label);
+        tag_label_ = label;
+        return box;
     }
 
     void MakeColon(int x, int y, int w, int h, int t) {
@@ -353,6 +381,8 @@ private:
 
     lv_obj_t* root_ = nullptr;
     lv_obj_t* colon_dots_[2] = {};
+    lv_obj_t* pil_tag_ = nullptr;
+    lv_obj_t* tag_label_ = nullptr;
     lv_obj_t* alarm_dot_ = nullptr;
     lv_obj_t* alarm_text_ = nullptr;
     lv_obj_t* battery_ = nullptr;
