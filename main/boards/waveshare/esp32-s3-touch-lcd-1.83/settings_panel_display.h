@@ -111,6 +111,11 @@ public:
 
     void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
 
+    // IMU'dan geliyor. Ikisi de yalnizca uye yaziyor; LVGL'e dokunan is
+    // animasyon zamanlayicisinda yapiliyor, o yuzden kilit gerekmiyor.
+    void SetGaze(float x, float y) { eyes_.SetGazeTarget(x, y); }
+    void TriggerDizzy() { eyes_.TriggerDizzy(); }
+
     // GECICI TESHIS: raporu board sunucuya gonderiyor (ekran guvenilir degil,
     // gelen sohbet mesaji gorunumu degistirip raporu siliyor).
     void SetDiagnosticReporter(std::function<void(const std::string&)> reporter) {
@@ -370,6 +375,7 @@ private:
     View current_view_ = View::kLauncher;
     EyesFace eyes_;
     lv_timer_t* face_timer_ = nullptr;
+    lv_timer_t* anim_timer_ = nullptr;
     lv_obj_t* launcher_ = nullptr;
     lv_obj_t* view_settings_ = nullptr;
     lv_obj_t* view_wifi_ = nullptr;
@@ -521,6 +527,9 @@ private:
         }
         eyes_.Create(lv_screen_active(), static_cast<LvglTheme*>(current_theme_));
         face_timer_ = lv_timer_create(FaceTimerCb, kFaceTickMs, this);
+        // Goz animasyonu ayri ve cok daha hizli: saat/alarm icin 1 sn yeterli
+        // ama bakis takibi 20 kare/sn istiyor.
+        anim_timer_ = lv_timer_create(AnimTimerCb, EyesFace::kAnimMs, this);
     }
 
     // ------------------------------------------------------------------
@@ -1985,6 +1994,10 @@ private:
         auto* self = static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer));
         self->eyes_.Tick();
         self->AlarmTick();
+    }
+
+    static void AnimTimerCb(lv_timer_t* timer) {
+        static_cast<SettingsPanelDisplay*>(lv_timer_get_user_data(timer))->eyes_.Animate();
     }
 
     static void InfoTimerCb(lv_timer_t* timer) {

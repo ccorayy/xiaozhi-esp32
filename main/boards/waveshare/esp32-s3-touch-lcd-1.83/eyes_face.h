@@ -24,6 +24,7 @@
 #include <lvgl.h>
 
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -40,6 +41,14 @@ public:
     static constexpr int kEyeGap = 100;  // iki goz merkezi arasi
     static constexpr int kEyeY = -6;     // merkeze gore dikey kayma
     static constexpr int kIdleSeconds = 15;
+    static constexpr int kPupilW = 24;
+    static constexpr int kPupilH = 30;
+    static constexpr int kAnimMs = 50;        // 20 kare/sn - bakis icin yeterli
+    // Yay katsayisi ve sonum. NIMO'daki degerlerin biraz yumusatilmisi.
+    static constexpr float kSpringK = 0.22f;
+    static constexpr float kSpringD = 0.62f;
+    static constexpr int kDizzyTicks = 30;    // 1.5 sn
+    static constexpr int kAngryTicks = 40;    // 2 sn
 
     void Create(lv_obj_t* parent, LvglTheme* theme) {
         theme_ = theme;
@@ -141,6 +150,16 @@ public:
         segment_clock_.SetAlarm(enabled, hour, minute);
     }
 
+    // ⚠️ Bunlar IMU'nun esp_timer gorevinden cagriliyor. Bilerek yalnizca
+    // sayi/bayrak yaziyorlar; LVGL'e dokunan her sey animasyon
+    // zamanlayicisinda (LVGL gorevi) yapiliyor, boylece kilit gerekmiyor.
+    void SetGazeTarget(float x, float y) {
+        gaze_x_ = x;
+        gaze_y_ = y;
+    }
+
+    void TriggerDizzy() { dizzy_requested_ = true; }
+
     void SetSegmentFace(bool on) {
         segment_face_ = on;
         if (clock_visible_) {
@@ -149,6 +168,7 @@ public:
     }
 
     void SetHidden(bool hidden) {
+        hidden_ = hidden;
         if (root_ == nullptr) {
             return;
         }
@@ -160,6 +180,43 @@ public:
     }
 
     // Saniyede bir cagrilir
+    // 50 ms'de bir. Bakis fizigi, sersemleme/kizma zinciri burada isliyor.
+    void Animate() {
+        if (root_ == nullptr || clock_visible_ || hidden_) {
+            return;  // saat ekraninda ya da panel acikken gozler gorunmuyor
+        }
+
+        if (dizzy_requested_ && motion_ == Motion::kIdle) {
+            dizzy_requested_ = false;
+            motion_ = Motion::kDizzy;
+            motion_ticks_ = 0;
+            before_motion_ = current_;
+        }
+
+        float tx = gaze_x_, ty = gaze_y_;
+        if (motion_ == Motion::kDizzy) {
+            // Bebekler daire ciziyor; sallanmanin sersemlettigi izlenimi.
+            float angle = motion_ticks_ * 0.45f;
+            tx = cosf(angle) * kGazeLimitX;
+            ty = sinf(angle) * kGazeLimitY;
+            if (++motion_ticks_ >= kDizzyTicks) {
+                motion_ = Motion::kAngry;
+                motion_ticks_ = 0;
+                SetExpression("angry");
+            }
+        } else if (motion_ == Motion::kAngry) {
+            tx = 0;
+            ty = 0;
+            if (++motion_ticks_ >= kAngryTicks) {
+                motion_ = Motion::kIdle;
+                Apply(before_motion_);
+            }
+        }
+
+        MovePupil(left_, tx, ty);
+        MovePupil(right_, tx, ty);
+    }
+
     void Tick() {
         if (root_ == nullptr) {
             return;
@@ -206,10 +263,16 @@ private:
 
     struct Eye {
         lv_obj_t* obj = nullptr;
+        lv_obj_t* pupil = nullptr;
+        lv_obj_t* glint = nullptr;   // bebekteki parlama noktasi
         lv_obj_t* lid_top = nullptr;
         lv_obj_t* lid_bottom = nullptr;
         int base_x = 0;
         int height = kEyeH;  // kirpma animasyonu icin
+        // Bebek konumu ve hizi. Yay-sonum: hedefe zipliyor degil, yavaslayarak
+        // yaklasiyor - bakisi canli yapan sey bu.
+        float px = 0, py = 0;
+        float vx = 0, vy = 0;
     };
 
     static constexpr uint32_t kPink = 0xFF5C8A;
@@ -267,6 +330,25 @@ private:
         return &table[0];  // taninmayan ifade -> neutral
     }
 
+    // Yay-sonum: ivme hedefe olan uzakligin katı, hiz her adimda soniyor.
+    void MovePupil(Eye& eye, float tx, float ty) {
+        if (eye.pupil == nullptr) {
+            return;
+        }
+        eye.vx = (eye.vx + (tx - eye.px) * kSpringK) * kSpringD;
+        eye.vy = (eye.vy + (ty - eye.py) * kSpringK) * kSpringD;
+        eye.px += eye.vx;
+        eye.py += eye.vy;
+
+        int max_x = (kEyeW - kPupilW) / 2;
+        int max_y = (kEyeH - kPupilH) / 2;
+        int x = static_cast<int>(eye.px);
+        int y = static_cast<int>(eye.py);
+        x = x > max_x ? max_x : (x < -max_x ? -max_x : x);
+        y = y > max_y ? max_y : (y < -max_y ? -max_y : y);
+        lv_obj_align(eye.pupil, LV_ALIGN_CENTER, x, y);
+    }
+
     void CreateEye(Eye& eye, int base_x) {
         eye.base_x = base_x;
 
@@ -279,6 +361,21 @@ private:
         lv_obj_set_style_clip_corner(eye.obj, true, 0);
         lv_obj_remove_flag(eye.obj, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(eye.obj, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        eye.pupil = lv_obj_create(eye.obj);
+        lv_obj_remove_style_all(eye.pupil);
+        lv_obj_set_size(eye.pupil, kPupilW, kPupilH);
+        lv_obj_center(eye.pupil);
+        lv_obj_set_style_bg_opa(eye.pupil, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(eye.pupil, kPupilW / 2, 0);
+        lv_obj_remove_flag(eye.pupil, LV_OBJ_FLAG_SCROLLABLE);
+
+        eye.glint = lv_obj_create(eye.pupil);
+        lv_obj_remove_style_all(eye.glint);
+        lv_obj_set_size(eye.glint, 7, 7);
+        lv_obj_align(eye.glint, LV_ALIGN_TOP_RIGHT, -4, 5);
+        lv_obj_set_style_bg_opa(eye.glint, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(eye.glint, 4, 0);
 
         // Kapaklar gozun cocugu; arka plan rengiyle boyanip gozu ortuyorlar.
         // Genislik %200 cunku egildiklerinde kenarlarda bosluk kalmasin.
@@ -352,6 +449,12 @@ private:
             lv_obj_set_style_bg_color(eye->obj, eye_color, 0);
             lv_obj_set_style_bg_color(eye->lid_top, bg, 0);
             lv_obj_set_style_bg_color(eye->lid_bottom, bg, 0);
+            // Bebek arka plan rengiyle boyaniyor: gozde delik gibi duruyor.
+            // Parlama noktasi goz rengi - bakisi canlandiran ayrinti.
+            if (eye->pupil != nullptr) {
+                lv_obj_set_style_bg_color(eye->pupil, bg, 0);
+                lv_obj_set_style_bg_color(eye->glint, eye_color, 0);
+            }
         }
     }
 
@@ -509,6 +612,16 @@ private:
     int64_t last_activity_us_ = 0;
     bool clock_visible_ = false;
     bool force_clock_ = false;
+    // Bakis ve hareket durumu
+    enum class Motion { kIdle, kDizzy, kAngry };
+    Motion motion_ = Motion::kIdle;
+    int motion_ticks_ = 0;
+    const Expression* before_motion_ = nullptr;
+    float gaze_x_ = 0, gaze_y_ = 0;
+    bool dizzy_requested_ = false;
+    bool hidden_ = false;
+    static constexpr float kGazeLimitX = 14.0f;
+    static constexpr float kGazeLimitY = 16.0f;
     bool segment_face_ = true;
     SegmentClock segment_clock_;
     std::string weather_;

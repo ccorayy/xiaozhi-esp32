@@ -321,7 +321,11 @@ private:
     static constexpr float kMotionThreshold = 0.35f;   // normal kullanimda 0.2-0.3 geliyordu
     static constexpr float kFaceDownZ = -0.60f;        // ekran asagi bakiyor
     static constexpr float kNotFaceDownZ = -0.30f;     // histerezis: bu esigin ustu "yuzustu degil"
-    static constexpr int kFaceDownSamples = 4;         // ~0.8 sn dogrulama
+    static constexpr int kFaceDownSamples = 16;        // ~0.8 sn (50 ms x 16)
+    // Bakis: 1 g egim ~14 piksel bebek kaymasi. Goz 56 px, bebek 24 px,
+    // yani en fazla 16 px oynayabiliyor - katsayi onu dolduracak kadar.
+    static constexpr float kGazeGain = 26.0f;
+    static constexpr float kShakeThreshold = 1.20f;
 
     void InitializeImu() {
         // Once yoklama: I2cDevice::ReadReg icindeki ESP_ERROR_CHECK yanlis
@@ -351,7 +355,7 @@ private:
         args.dispatch_method = ESP_TIMER_TASK;
         args.name = "imu_tick";
         if (esp_timer_create(&args, &imu_timer_) == ESP_OK) {
-            esp_timer_start_periodic(imu_timer_, 200000);  // 200 ms
+            esp_timer_start_periodic(imu_timer_, 50000);  // 50 ms - bakis takibi icin
         }
     }
 
@@ -369,7 +373,19 @@ private:
             }
         }
 
-        (void)delta;
+        // --- Bakis takibi ve sarsinti (NIMO'daki davranisin karsiligi)
+        // Eksen duzeni cihazda olculdu (bkz. CLAUDE.md): dik dururken x=+1
+        // yani yercekimi X'te; Z ekran normali (yuzustu -1). Dolayisiyla
+        // saga/sola egme Y'de, one/arkaya egme Z'de goruluyor.
+        if (panel_display_ != nullptr) {
+            panel_display_->SetGaze(y * kGazeGain, z * kGazeGain);
+            // Uyandirma esigi 0.35; sarsinti bundan cok daha sert olmali ki
+            // cihazi eline almak sersemletmesin.
+            if (delta > kShakeThreshold) {
+                panel_display_->TriggerDizzy();
+            }
+        }
+
         imu_last_x_ = x;
         imu_last_y_ = y;
         imu_last_z_ = z;
