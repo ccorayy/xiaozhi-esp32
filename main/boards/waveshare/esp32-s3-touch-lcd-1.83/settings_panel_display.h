@@ -713,7 +713,7 @@ private:
             {MATERIAL_SYMBOLS_ALARM, "Alarm", 0xFFD60A, View::kAlarm},
             {MATERIAL_SYMBOLS_SD_CARD, "SD Kart", 0x64D2FF, View::kSd},
             {MATERIAL_SYMBOLS_IMAGE, "Galeri", 0x5E5CE6, View::kGallery},
-            {MATERIAL_SYMBOLS_RADIO, "Radyo", 0xFF9F0A, View::kRadio},
+            {MATERIAL_SYMBOLS_MUSIC_NOTE, "Radyo", 0xFF9F0A, View::kRadio},
             {MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "Kisayol", 0xFF453A, View::kActions},
         };
         for (const auto& app : apps) {
