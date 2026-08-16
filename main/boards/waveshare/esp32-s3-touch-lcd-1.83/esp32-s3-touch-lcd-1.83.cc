@@ -580,16 +580,24 @@ private:
     RadioPlayer radio_;
     std::vector<RadioPlayer::Station> radio_stations_;
 
+    // ⚠️ Bu LVGL gorevinden cagriliyor; icinde HTTPS YAPMIYORUZ. Liste
+    // acilista ayri bir gorevde cekilip onbelleklendi.
     std::vector<std::string> RadioStationNames() {
-        if (radio_stations_.empty()) {
-            radio_stations_ = RadioPlayer::FetchList(kServiceBase);
-        }
         std::vector<std::string> names;
         names.reserve(radio_stations_.size());
         for (const auto& s : radio_stations_) {
             names.push_back(s.name);
         }
         return names;
+    }
+
+    void FetchRadioStations() {
+        xTaskCreate([](void* arg) {
+            auto* self = static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg);
+            self->radio_stations_ = RadioPlayer::FetchList(kServiceBase);
+            ESP_LOGI(TAG, "Radyo istasyonlari: %d", (int)self->radio_stations_.size());
+            vTaskDelete(nullptr);
+        }, "radyo_liste", 8192, this, 2, nullptr);
     }
 
     void PlayRadio(int index) {
@@ -618,6 +626,18 @@ private:
         args.name = "weather";
         if (esp_timer_create(&args, &weather_timer_) == ESP_OK) {
             esp_timer_start_once(weather_timer_, kWeatherFirstDelayMs * 1000LL);
+        }
+        // Radyo istasyon listesini de ag oturduktan sonra cekiyoruz.
+        esp_timer_create_args_t list_args = {};
+        list_args.callback = [](void* arg) {
+            static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg)->FetchRadioStations();
+        };
+        list_args.arg = this;
+        list_args.dispatch_method = ESP_TIMER_TASK;
+        list_args.name = "radyo_liste";
+        esp_timer_handle_t list_timer = nullptr;
+        if (esp_timer_create(&list_args, &list_timer) == ESP_OK) {
+            esp_timer_start_once(list_timer, (kWeatherFirstDelayMs + 5000) * 1000LL);
         }
     }
 

@@ -30,6 +30,7 @@
 #include <freertos/task.h>
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -52,8 +53,8 @@ public:
         station_name_ = station.name;
         stop_requested_ = false;
         playing_ = true;
-        // TLS el sikismasi yigin istiyor; OTA indirmesi de benzer boyutta.
-        xTaskCreate(TaskEntry, "radyo", 8192, this, 3, &task_);
+        // Demuxer artik obekte ama TLS el sikismasi hala birkac KB istiyor.
+        xTaskCreate(TaskEntry, "radyo", 12288, this, 3, &task_);
     }
 
     void Stop() {
@@ -71,6 +72,9 @@ public:
 
     // Sunucudaki istasyon listesi. Firmware'e gomulu degil ki istasyon
     // degistirmek icin guncelleme gerekmesin.
+    //
+    // ⚠️ TLS istiyor: LVGL gorevinden CAGIRMA, onun yigini bu is icin dar.
+    // Board bunu acilista kisa omurlu bir gorevde cagirip onbellekliyor.
     static std::vector<Station> FetchList(const std::string& base_url) {
         std::vector<Station> list;
         auto network = Board::GetInstance().GetNetwork();
@@ -143,8 +147,12 @@ private:
         ESP_LOGI(kTag, "Caliyor: %s", station_name_.c_str());
 
         auto& audio = Application::GetInstance().GetAudioService();
-        OggDemuxer demuxer;
-        demuxer.OnDemuxerFinished([&audio](const uint8_t* data, int sample_rate, size_t size) {
+        // ⚠️ OggDemuxer icinde 8192 baytlik paket tamponu var. Yiginda
+        // olusturmak gorevin butun yigi­nini tek basina yiyor ve cihaz
+        // aninda cokuyor - bir surum tam olarak boyle patladi. PlaySound
+        // da bu yuzden make_unique kullaniyor.
+        auto demuxer = std::make_unique<OggDemuxer>();
+        demuxer->OnDemuxerFinished([&audio](const uint8_t* data, int sample_rate, size_t size) {
             auto packet = std::make_unique<AudioStreamPacket>();
             packet->sample_rate = sample_rate;
             packet->frame_duration = 60;
@@ -154,7 +162,7 @@ private:
             // dolayisiyla yavasliyor. Akis gercek zamana kendiliginden oturuyor.
             audio.PushPacketToDecodeQueue(std::move(packet), true);
         });
-        demuxer.Reset();
+        demuxer->Reset();
 
         std::vector<char> buffer(kChunk);
         while (!stop_requested_.load()) {
@@ -163,7 +171,7 @@ private:
                 ESP_LOGW(kTag, "Akis kesildi (%d)", n);
                 break;
             }
-            demuxer.Process(reinterpret_cast<const uint8_t*>(buffer.data()),
+            demuxer->Process(reinterpret_cast<const uint8_t*>(buffer.data()),
                             static_cast<size_t>(n));
         }
 
