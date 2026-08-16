@@ -115,6 +115,7 @@ public:
     // animasyon zamanlayicisinda yapiliyor, o yuzden kilit gerekmiyor.
     void SetGaze(float x, float y) { eyes_.SetGazeTarget(x, y); }
     void TriggerDizzy() { eyes_.TriggerDizzy(); }
+    void SetOnDizzy(std::function<void()> callback) { eyes_.SetOnDizzy(std::move(callback)); }
 
     // GECICI TESHIS: raporu board sunucuya gonderiyor (ekran guvenilir degil,
     // gelen sohbet mesaji gorunumu degistirip raporu siliyor).

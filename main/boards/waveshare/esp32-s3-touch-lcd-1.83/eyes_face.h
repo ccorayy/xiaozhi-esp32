@@ -25,6 +25,7 @@
 
 #include <cstdio>
 #include <cmath>
+#include <functional>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -142,6 +143,10 @@ public:
 
     void TriggerDizzy() { dizzy_requested_ = true; }
 
+    // Sersemleme GERCEKTEN basladiginda cagriliyor (istek reddedilebilir:
+    // zaten sersemse ya da saat ekranindaysa). Board burada ses caliyor.
+    void SetOnDizzy(std::function<void()> callback) { on_dizzy_ = std::move(callback); }
+
     void SetSegmentFace(bool on) {
         segment_face_ = on;
         if (clock_visible_) {
@@ -173,6 +178,9 @@ public:
             motion_ = Motion::kDizzy;
             motion_ticks_ = 0;
             before_motion_ = current_;
+            if (on_dizzy_) {
+                on_dizzy_();
+            }
         }
 
         float tx = gaze_x_, ty = gaze_y_;
@@ -624,6 +632,7 @@ private:
     const Expression* before_motion_ = nullptr;
     float gaze_x_ = 0, gaze_y_ = 0;
     bool dizzy_requested_ = false;
+    std::function<void()> on_dizzy_;
     bool hidden_ = false;
     static constexpr float kGazeLimitX = 14.0f;
     static constexpr float kGazeLimitY = 16.0f;

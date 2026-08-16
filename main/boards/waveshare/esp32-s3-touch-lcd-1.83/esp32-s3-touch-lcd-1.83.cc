@@ -325,7 +325,14 @@ private:
     // Bakis: 1 g egim ~14 piksel bebek kaymasi. Goz 56 px, bebek 24 px,
     // yani en fazla 16 px oynayabiliyor - katsayi onu dolduracak kadar.
     static constexpr float kGazeGain = 26.0f;
-    static constexpr float kShakeThreshold = 1.20f;
+    // Tek darbe (masaya vurma, cihazi birakma) sersemletmesin: esik yukseldi
+    // ve kisa pencerede birden fazla darbe isteniyor. Gercek sallamada
+    // saniyede 5-10 tepe geliyor, tek vurusta bir tane.
+    static constexpr float kShakeThreshold = 1.60f;
+    static constexpr int kShakeHitsNeeded = 3;
+    static constexpr int kShakeWindow = 12;  // 12 x 50 ms = 600 ms
+    int shake_hits_ = 0;
+    int shake_window_ = 0;
 
     void InitializeImu() {
         // Once yoklama: I2cDevice::ReadReg icindeki ESP_ERROR_CHECK yanlis
@@ -379,10 +386,15 @@ private:
         // saga/sola egme Y'de, one/arkaya egme Z'de goruluyor.
         if (panel_display_ != nullptr) {
             panel_display_->SetGaze(y * kGazeGain, z * kGazeGain);
-            // Uyandirma esigi 0.35; sarsinti bundan cok daha sert olmali ki
-            // cihazi eline almak sersemletmesin.
             if (delta > kShakeThreshold) {
-                panel_display_->TriggerDizzy();
+                shake_window_ = kShakeWindow;
+                if (++shake_hits_ >= kShakeHitsNeeded) {
+                    shake_hits_ = 0;
+                    shake_window_ = 0;
+                    panel_display_->TriggerDizzy();
+                }
+            } else if (shake_window_ > 0 && --shake_window_ == 0) {
+                shake_hits_ = 0;  // pencere kapandi, sayac sifirlansin
             }
         }
 
@@ -791,6 +803,11 @@ private:
         });
         settings_display->SetSdInfoProvider([this]() { return sd_status_; });
         settings_display->SetOnAlarmRing([this]() { OnAlarmRing(); });
+        settings_display->SetOnDizzy([]() {
+            // LVGL gorevinden geliyor; ses hattini ana gorevde acalim.
+            Application::GetInstance().Schedule(
+                []() { Application::GetInstance().PlaySound(Lang::Sounds::OGG_EXCLAMATION); });
+        });
 
         SettingsPanelDisplay::SdHooks sd_hooks;
         sd_hooks.status = [this]() { return sd_status_; };
