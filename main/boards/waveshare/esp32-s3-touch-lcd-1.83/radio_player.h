@@ -1,0 +1,180 @@
+#pragma once
+
+// ---------------------------------------------------------------------------
+// Web radyo.
+//
+// Cihazda hazir bir akis oynatma yolu zaten var: sunucudan gelen TTS sesi
+// Opus paketleri halinde AudioService'e itiliyor. Radyo da ayni yolu
+// kullaniyor, tek fark kaynagin HTTP olmasi:
+//
+//   http->Read(...) -> OggDemuxer::Process(...) -> PushPacketToDecodeQueue()
+//
+// PushPacketToDecodeQueue(paket, wait=true) kuyruk dolunca BLOKLUYOR; bu da
+// HTTP okumasini gercek zamana kilitliyor. Akis kontrolu bedavaya geliyor,
+// ayrica arabellek yonetmemiz gerekmiyor.
+//
+// ⚠️ Cozucumuz yalnizca Opus, demuxer yalnizca Ogg. Istasyonlarin cogu
+// MP3/AAC/HLS yayinliyor, o yuzden cevrimi SUNUCU yapiyor (ffmpeg, bkz.
+// xiaozhi-mcp-search/server.py). Sunucu 24 kHz mono Opus veriyor - cihazin
+// cikis hizi da 24 kHz, yeniden ornekleyici devreye girmiyor.
+//
+// Ses cikisini acmak bizim isimiz degil: oynatma gorevi veri gelince kendi
+// aciyor, sessizlikte guc zamanlayicisi kapatiyor.
+// ---------------------------------------------------------------------------
+
+#include "application.h"
+#include "board.h"
+#include "demuxer/ogg_demuxer.h"
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+#include <atomic>
+#include <string>
+#include <vector>
+
+class RadioPlayer {
+public:
+    struct Station {
+        std::string slug;
+        std::string name;
+    };
+
+    ~RadioPlayer() { Stop(); }
+
+    bool playing() const { return playing_.load(); }
+    const std::string& station_name() const { return station_name_; }
+
+    // Calan varsa durdurup yenisini baslatir.
+    void Play(const std::string& base_url, const Station& station) {
+        Stop();
+        url_ = base_url + "/radio?s=" + station.slug;
+        station_name_ = station.name;
+        stop_requested_ = false;
+        playing_ = true;
+        // TLS el sikismasi yigin istiyor; OTA indirmesi de benzer boyutta.
+        xTaskCreate(TaskEntry, "radyo", 8192, this, 3, &task_);
+    }
+
+    void Stop() {
+        if (!playing_.load()) {
+            return;
+        }
+        stop_requested_ = true;
+        // Gorev okuma/bekleme icinde olabilir; kendi cikip bayragi dusurmesini
+        // bekliyoruz. Kuyruk en fazla birkac yuz ms icinde bosaliyor.
+        for (int i = 0; i < 60 && playing_.load(); i++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        station_name_.clear();
+    }
+
+    // Sunucudaki istasyon listesi. Firmware'e gomulu degil ki istasyon
+    // degistirmek icin guncelleme gerekmesin.
+    static std::vector<Station> FetchList(const std::string& base_url) {
+        std::vector<Station> list;
+        auto network = Board::GetInstance().GetNetwork();
+        if (network == nullptr) {
+            return list;
+        }
+        auto http = network->CreateHttp(0);
+        if (http == nullptr || !http->Open("GET", base_url + "/radio/list")) {
+            return list;
+        }
+        std::string body;
+        if (http->GetStatusCode() == 200) {
+            body = http->ReadAll();
+        }
+        http->Close();
+
+        // [{"slug":"joyturk","ad":"Joy Turk"}, ...] - kucuk yanit, cJSON
+        // kurmaya degmez (hava durumunda da ayni yaklasim).
+        size_t pos = 0;
+        while (list.size() < kMaxStations) {
+            std::string slug = Field(body, "\"slug\":\"", pos);
+            std::string name = Field(body, "\"ad\":\"", pos);
+            if (slug.empty() || name.empty()) {
+                break;
+            }
+            list.push_back({slug, name});
+        }
+        return list;
+    }
+
+private:
+    static constexpr size_t kMaxStations = 12;
+    static constexpr size_t kChunk = 2048;
+
+    static std::string Field(const std::string& json, const char* key, size_t& pos) {
+        auto start = json.find(key, pos);
+        if (start == std::string::npos) {
+            return "";
+        }
+        start += strlen(key);
+        auto end = json.find('"', start);
+        if (end == std::string::npos) {
+            return "";
+        }
+        pos = end;
+        return json.substr(start, end - start);
+    }
+
+    static void TaskEntry(void* arg) {
+        static_cast<RadioPlayer*>(arg)->Run();
+        vTaskDelete(nullptr);
+    }
+
+    void Run() {
+        static const char* kTag = "Radyo";
+        auto network = Board::GetInstance().GetNetwork();
+        auto http = network != nullptr ? network->CreateHttp(0) : nullptr;
+
+        if (http == nullptr || !http->Open("GET", url_)) {
+            ESP_LOGW(kTag, "Baglanilamadi: %s", url_.c_str());
+            playing_ = false;
+            return;
+        }
+        if (http->GetStatusCode() != 200) {
+            ESP_LOGW(kTag, "Sunucu %d dondu", http->GetStatusCode());
+            http->Close();
+            playing_ = false;
+            return;
+        }
+        ESP_LOGI(kTag, "Caliyor: %s", station_name_.c_str());
+
+        auto& audio = Application::GetInstance().GetAudioService();
+        OggDemuxer demuxer;
+        demuxer.OnDemuxerFinished([&audio](const uint8_t* data, int sample_rate, size_t size) {
+            auto packet = std::make_unique<AudioStreamPacket>();
+            packet->sample_rate = sample_rate;
+            packet->frame_duration = 60;
+            packet->payload.resize(size);
+            std::memcpy(packet->payload.data(), data, size);
+            // wait=true: kuyruk dolunca burada bekliyoruz, HTTP okumasi da
+            // dolayisiyla yavasliyor. Akis gercek zamana kendiliginden oturuyor.
+            audio.PushPacketToDecodeQueue(std::move(packet), true);
+        });
+        demuxer.Reset();
+
+        std::vector<char> buffer(kChunk);
+        while (!stop_requested_.load()) {
+            int n = http->Read(buffer.data(), buffer.size());
+            if (n <= 0) {
+                ESP_LOGW(kTag, "Akis kesildi (%d)", n);
+                break;
+            }
+            demuxer.Process(reinterpret_cast<const uint8_t*>(buffer.data()),
+                            static_cast<size_t>(n));
+        }
+
+        http->Close();
+        ESP_LOGI(kTag, "Durdu: %s", station_name_.c_str());
+        playing_ = false;
+    }
+
+    std::string url_;
+    std::string station_name_;
+    std::atomic<bool> playing_{false};
+    std::atomic<bool> stop_requested_{false};
+    TaskHandle_t task_ = nullptr;
+};

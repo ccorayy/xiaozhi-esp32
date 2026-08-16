@@ -71,7 +71,7 @@ public:
     // digerleri kabuk uzerinde tam ekran acilir.
     // kPhoto menude yok; galeriden bir dosyaya dokununca aciliyor.
     enum class View { kChat, kClock, kLauncher, kSettings, kWifi, kInfo, kActions, kAlarm, kSd,
-                      kGallery, kPhoto };
+                      kGallery, kPhoto, kRadio };
 
     // SD kart islerini board yapar; bu sinif ne SDMMC'yi ne de httpd'yi tanir.
     struct SdHooks {
@@ -82,6 +82,14 @@ public:
         std::function<void(bool)> set_server;
         std::function<std::string()> server_url;      // "192.168.1.42"
         std::function<std::vector<std::string>()> list_images;
+    };
+
+    // Radyo isini board yapiyor; bu sinif ne HTTP ne de ses hattini tanir.
+    struct RadioHooks {
+        std::function<std::vector<std::string>()> stations;  // gosterilecek adlar
+        std::function<void(int)> play;                       // listedeki sira
+        std::function<void()> stop;
+        std::function<std::string()> now_playing;            // bos = calmiyor
     };
 
     SettingsPanelDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -110,6 +118,7 @@ public:
     }
 
     void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
+    void SetRadioHooks(RadioHooks hooks) { radio_ = std::move(hooks); }
 
     // IMU'dan geliyor. Ikisi de yalnizca uye yaziyor; LVGL'e dokunan is
     // animasyon zamanlayicisinda yapiliyor, o yuzden kilit gerekmiyor.
@@ -263,6 +272,8 @@ public:
             target = View::kSd;
         } else if (name == "gallery" || name == "galeri" || name == "photos") {
             target = View::kGallery;
+        } else if (name == "radio" || name == "radyo") {
+            target = View::kRadio;
         } else {
             return false;
         }
@@ -284,6 +295,7 @@ public:
             case View::kSd: return "sd";
             case View::kGallery: return "gallery";
             case View::kPhoto: return "photo";
+            case View::kRadio: return "radio";
         }
         return "unknown";
     }
@@ -386,6 +398,7 @@ private:
     lv_obj_t* view_sd_ = nullptr;
     lv_obj_t* view_gallery_ = nullptr;
     lv_obj_t* view_photo_ = nullptr;
+    lv_obj_t* view_radio_ = nullptr;
 
     lv_obj_t* panel_ = nullptr;
     lv_obj_t* open_strip_ = nullptr;
@@ -439,6 +452,14 @@ private:
     lv_obj_t* sd_files_ = nullptr;
     lv_obj_t* sd_server_switch_ = nullptr;
     lv_obj_t* sd_url_ = nullptr;
+
+    // Sayfa 8 - Radyo
+    RadioHooks radio_;
+    lv_obj_t* radio_list_ = nullptr;
+    lv_obj_t* radio_status_ = nullptr;
+    lv_obj_t* radio_stop_button_ = nullptr;
+    lv_obj_t* radio_stop_label_ = nullptr;
+    std::vector<std::string> radio_names_;
 
     // Sayfa 7 - Galeri
     lv_obj_t* gallery_list_ = nullptr;
@@ -570,6 +591,8 @@ private:
         view_sd_ = CreateAppView("SD Kart");
         BuildSdTile(view_sd_);
         LoadFacePreference();
+        view_radio_ = CreateAppView("Radyo");
+        BuildRadioTile(view_radio_);
         view_gallery_ = CreateAppView("Galeri");
         BuildGalleryTile(view_gallery_);
         view_photo_ = CreateAppView("Gorsel");
@@ -690,6 +713,7 @@ private:
             {MATERIAL_SYMBOLS_ALARM, "Alarm", 0xFFD60A, View::kAlarm},
             {MATERIAL_SYMBOLS_SD_CARD, "SD Kart", 0x64D2FF, View::kSd},
             {MATERIAL_SYMBOLS_IMAGE, "Galeri", 0x5E5CE6, View::kGallery},
+            {MATERIAL_SYMBOLS_RADIO, "Radyo", 0xFF9F0A, View::kRadio},
             {MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "Kisayol", 0xFF453A, View::kActions},
         };
         for (const auto& app : apps) {
@@ -818,6 +842,69 @@ private:
         confirm.action = std::move(action);
         confirm.button = CreateButton(tile, idle_text, &confirm.label);
         lv_obj_add_event_cb(confirm.button, ConfirmEventCb, LV_EVENT_CLICKED, &confirm);
+    }
+
+    // ------------------------------------------------------------------
+    // Sayfa 8 - Radyo
+    // ------------------------------------------------------------------
+    void BuildRadioTile(lv_obj_t* tile) {
+        radio_status_ = CreateLabel(tile, "-");
+        lv_obj_set_width(radio_status_, lv_pct(100));
+        lv_label_set_long_mode(radio_status_, LV_LABEL_LONG_DOT);
+
+        radio_stop_button_ = CreateButton(tile, "Durdur", &radio_stop_label_);
+        lv_obj_set_height(radio_stop_button_, 32);
+        lv_obj_add_event_cb(radio_stop_button_, RadioStopEventCb, LV_EVENT_CLICKED, this);
+
+        // Istasyonlar her aciliista yeniden uretiliyor; etiketleri
+        // plain_labels_ e EKLEMIYORUZ (lv_obj_clean sonrasi StylePanel olu
+        // isaretciye dokunurdu - wifi listesindeki ayni tuzak).
+        radio_list_ = lv_obj_create(tile);
+        lv_obj_set_width(radio_list_, lv_pct(100));
+        lv_obj_set_flex_grow(radio_list_, 1);
+        lv_obj_set_style_bg_opa(radio_list_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(radio_list_, 0, 0);
+        lv_obj_set_style_pad_all(radio_list_, 0, 0);
+        lv_obj_set_style_pad_row(radio_list_, 4, 0);
+        lv_obj_set_flex_flow(radio_list_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_scroll_dir(radio_list_, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(radio_list_, LV_SCROLLBAR_MODE_OFF);
+    }
+
+    void RefreshRadio() {
+        if (radio_list_ == nullptr) {
+            return;
+        }
+        std::string now = radio_.now_playing ? radio_.now_playing() : "";
+        lv_label_set_text(radio_status_,
+                          now.empty() ? "Bir istasyon sec" : ("Caliyor: " + now).c_str());
+
+        lv_obj_clean(radio_list_);
+        radio_names_ = radio_.stations ? radio_.stations() : std::vector<std::string>();
+        if (radio_names_.empty()) {
+            lv_label_set_text(radio_status_, "Istasyon listesi alinamadi");
+            return;
+        }
+        for (size_t i = 0; i < radio_names_.size(); i++) {
+            lv_obj_t* button = lv_button_create(radio_list_);
+            lv_obj_set_width(button, lv_pct(100));
+            lv_obj_set_height(button, 30);
+            lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+            lv_obj_add_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
+            lv_obj_t* label = lv_label_create(button);
+            lv_label_set_text(label, radio_names_[i].c_str());
+            lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(label, lv_pct(100));
+            lv_obj_center(label);
+            lv_obj_add_event_cb(button, RadioPlayEventCb, LV_EVENT_CLICKED, this);
+            if (current_theme_ != nullptr) {
+                auto* theme = static_cast<LvglTheme*>(current_theme_);
+                bool active = !now.empty() && now == radio_names_[i];
+                StyleButton(button, label,
+                            active ? theme->text_color() : theme->chat_background_color(),
+                            active ? theme->background_color() : theme->text_color());
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1536,6 +1623,8 @@ private:
                     theme->text_color());
         StyleButton(wifi_scan_button_, wifi_scan_button_label_, theme->chat_background_color(),
                     theme->text_color());
+        StyleButton(radio_stop_button_, radio_stop_label_, theme->chat_background_color(),
+                    theme->text_color());
         for (const auto& pair : step_buttons_) {
             StyleButton(pair.button, pair.label, theme->chat_background_color(),
                         theme->text_color());
@@ -1606,7 +1695,8 @@ private:
         }
 
         for (lv_obj_t* screen : {launcher_, view_settings_, view_wifi_, view_info_, view_actions_,
-                                 view_alarm_, view_sd_, view_gallery_, view_photo_}) {
+                                 view_alarm_, view_sd_, view_gallery_, view_photo_,
+                                 view_radio_}) {
             if (screen != nullptr) {
                 lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
             }
@@ -1647,6 +1737,10 @@ private:
                 break;
             case View::kPhoto:
                 active = view_photo_;
+                break;
+            case View::kRadio:
+                active = view_radio_;
+                RefreshRadio();
                 break;
             default:
                 break;
@@ -1873,6 +1967,25 @@ private:
     static void BackEventCb(lv_event_t* e) {
         auto* self = Self(e);
         self->ShowView(self->current_view_ == View::kPhoto ? View::kGallery : View::kLauncher);
+    }
+
+    static void RadioPlayEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->NotifyActivity();
+        int index = RowIndex(e);
+        if (self->radio_.play && index >= 0) {
+            self->radio_.play(index);
+        }
+        self->RefreshRadio();
+    }
+
+    static void RadioStopEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        self->NotifyActivity();
+        if (self->radio_.stop) {
+            self->radio_.stop();
+        }
+        self->RefreshRadio();
     }
 
     static void GalleryRowClickedCb(lv_event_t* e) {

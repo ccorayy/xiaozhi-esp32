@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "display/lcd_display.h"
 #include "imu_qmi8658.h"
+#include "radio_player.h"
 #include "rtc_pcf85063.h"
 #include "sd_web_server.h"
 #include "settings_panel_display.h"
@@ -540,6 +541,7 @@ private:
     // ayni yere gidiyor. Eskiden ev agindaki IP'ye dusen yedek yol vardi,
     // sunucu evde olmadigi icin anlamini yitirdi.
     // Servis yaniti onbellekli oldugu icin bu istekler Gemini aramasi harcamaz.
+    static constexpr const char* kServiceBase = "https://hava.shoptimize.com.tr";
     static constexpr const char* kWeatherUrl = "https://hava.shoptimize.com.tr/weather";
     static constexpr int kWeatherFirstDelayMs = 30 * 1000;      // ag otursun
     static constexpr int kWeatherIntervalMs = 20 * 60 * 1000;   // 20 dakika
@@ -568,6 +570,35 @@ private:
         if (esp_timer_create(&args, &gallery_test_timer_) == ESP_OK) {
             esp_timer_start_once(gallery_test_timer_, 20 * 1000 * 1000LL);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Web radyo
+    // ------------------------------------------------------------------
+    // Istasyon listesi sunucudan geliyor; degistirmek icin firmware
+    // guncellemeye gerek kalmasin diye gomulu degil.
+    RadioPlayer radio_;
+    std::vector<RadioPlayer::Station> radio_stations_;
+
+    std::vector<std::string> RadioStationNames() {
+        if (radio_stations_.empty()) {
+            radio_stations_ = RadioPlayer::FetchList(kServiceBase);
+        }
+        std::vector<std::string> names;
+        names.reserve(radio_stations_.size());
+        for (const auto& s : radio_stations_) {
+            names.push_back(s.name);
+        }
+        return names;
+    }
+
+    void PlayRadio(int index) {
+        if (index < 0 || index >= static_cast<int>(radio_stations_.size())) {
+            return;
+        }
+        // Radyo ile asistan ayni hoparloru kullaniyor; konusma baslarsa
+        // radyoyu durduruyoruz (bkz. SetOnChatToggle).
+        radio_.Play(kServiceBase, radio_stations_[index]);
     }
 
     void InitializeWeather() {
@@ -803,6 +834,15 @@ private:
         });
         settings_display->SetSdInfoProvider([this]() { return sd_status_; });
         settings_display->SetOnAlarmRing([this]() { OnAlarmRing(); });
+        SettingsPanelDisplay::RadioHooks radio_hooks;
+        radio_hooks.stations = [this]() { return RadioStationNames(); };
+        radio_hooks.play = [this](int index) { PlayRadio(index); };
+        radio_hooks.stop = [this]() { radio_.Stop(); };
+        radio_hooks.now_playing = [this]() {
+            return radio_.playing() ? radio_.station_name() : std::string();
+        };
+        settings_display->SetRadioHooks(std::move(radio_hooks));
+
         settings_display->SetOnDizzy([]() {
             // LVGL gorevinden geliyor; ses hattini ana gorevde acalim.
             Application::GetInstance().Schedule(
