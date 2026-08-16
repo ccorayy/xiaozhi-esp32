@@ -91,7 +91,12 @@ public:
     }
 
     void SetExpression(const char* emotion) {
-        const Expression* e = Find(emotion);
+        ApplyExpression(Find(emotion));
+    }
+
+    // Sersemleme bittiginde onceki ifadeye donmek icin isaretciyle de
+    // cagirabilmemiz gerekiyor.
+    void ApplyExpression(const Expression* e) {
         if (e == nullptr) {
             return;
         }
@@ -209,7 +214,7 @@ public:
             ty = 0;
             if (++motion_ticks_ >= kAngryTicks) {
                 motion_ = Motion::kIdle;
-                Apply(before_motion_);
+                ApplyExpression(before_motion_);
             }
         }
 
