@@ -1,36 +1,37 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// Yedi-segment saat yuzu - VolosR/pocketClock gorunumunun bizim ekrana
-// olceklenmis hali.
+// Yedi-segment saat yuzu - VolosR/pocketClock gorunumune benzetildi.
 //
-// Referans cihaz 368x448 AMOLED, bizimki 240x284. En-boy oranlari birbirine
-// cok yakin (0.82 / 0.85), o yuzden tek bir olcek carpani butun yerlesimi
-// tasiyor: her olcu referanstaki degerin `scale_` katidir. Ekran degisirse
-// tasarim kendiliginden uyar.
+// ⚠️ Ilk surumu yalnizca ui_Screen1.c'deki koordinatlardan kurmustum ve
+// tasarimi yanlis anlamistim: "cerceve icinde buyuk saat" sandim. Cihaz
+// fotografi gosterdi ki referans aslinda bilgi yogun bir gosterge paneli -
+// kenarlikli mini kutular (ALM/CHR/BRIGHT), sag ustte segment tarih, buyuk
+// gun adi, saatin sag ustunde ust simge saniye, altta kimlik seridi.
+// Bu surum onu hedefliyor.
 //
-// Rakamlar icin font KULLANMIYORUZ. Referans G7_Segment_7a.ttf'i 100 px'te
-// gomuyor ve tek basina 187 KB yer kapliyor; ayrica fontun kendi lisansi var.
-// Yedi-segment zaten yedi dikdortgen - LVGL nesneleriyle ciziyoruz. Boylece
-// olcek serbest, binary buyumuyor ve kod tamamen bizim.
+// Ekran farki: referans 368x448, bizimki 240x284 (%65). Referansin kucuk
+// yazilari oransal olarak bizim en kucuk fontumuzdan (14 px) ince; ayni
+// yogunluga ulasamiyoruz, o yuzden ogeler secilerek alindi.
 //
-// Sonuk segmentler de ciziliyor (yalnizca sonmus olanlar gizlenmiyor, koyu
-// renkte duruyor): gercek LCD saatlerde oyle gorunur, tasarimi inandirici
-// yapan asil detay bu.
+// Rakamlar icin font yok, yedi dikdortgen ciziliyor: olcek serbest, binary
+// buyumuyor, lisans derdi yok (referansin G7 fontu ticaride lisansli).
+// Sonuk segmentler de koyu renkte duruyor - gercek LCD gorunumunu veren
+// detay bu.
 // ---------------------------------------------------------------------------
 
 #include <lvgl.h>
 
-#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <string>
 
+LV_FONT_DECLARE(font_noto_sans_basic_14_1);
+LV_FONT_DECLARE(font_noto_sans_basic_20_4);
+
 class SegmentClock {
 public:
     void Create(lv_obj_t* parent, int width, int height) {
-        scale_ = std::min(width / static_cast<float>(kRefW), height / static_cast<float>(kRefH));
-
         root_ = lv_obj_create(parent);
         lv_obj_remove_style_all(root_);
         lv_obj_set_size(root_, width, height);
@@ -39,54 +40,66 @@ public:
         lv_obj_add_flag(root_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(root_, lv_color_hex(kBackground), 0);
+        lv_obj_set_style_bg_color(root_, lv_color_hex(kBg), 0);
 
-        // Ic ice iki cerceve: referanstaki panel yiginini veren sey bu.
-        lv_obj_t* frame = MakePanel(root_, S(kRefFrameW), S(kRefFrameH), S(18), kFrame);
-        lv_obj_set_style_border_width(frame, S(3) < 1 ? 1 : S(3), 0);
-        lv_obj_set_style_border_color(frame, lv_color_hex(kFrameEdge), 0);
-        lv_obj_center(frame);
+        // Ekranin fiziksel yuvarlak koseleri kenari kirpiyor; icerik iceride.
+        const int left = kMargin;
+        const int right = width - kMargin;
 
-        lv_obj_t* face = MakePanel(frame, S(kRefFaceW), S(kRefFaceH), S(12), kFace);
-        lv_obj_center(face);
+        // --- ust serit: alarm gostergesi (referanstaki kirmizi E-SHOCK yeri)
+        alarm_dot_ = MakeBlock(root_, left, 10, 8, 8, kFaint);
+        alarm_text_ = MakeLabel(root_, left + 14, 6, kSmall(), kFaint);
+        lv_label_set_text(alarm_text_, "ALARM YOK");
 
-        // Saat: HH:MM. Iki basamak, iki nokta, iki basamak.
-        int digit_w = S(kRefDigitW);
-        int digit_h = S(kRefDigitH);
-        int thick = std::max(3, S(kRefThick));
-        int gap = std::max(2, S(kRefDigitGap));
-        int colon_w = std::max(4, S(kRefColonW));
-        int total = 4 * digit_w + 3 * gap + colon_w;
+        // --- sol sutun: etiketli mini kutular (referanstaki ALM / CHR)
+        MakeTag(left, 30, "PIL");
+        battery_ = MakeLabel(root_, left + kTagW + 6, 32, kSmall(), kInk);
+        MakeTag(left, 54, "SES");
+        volume_ = MakeLabel(root_, left + kTagW + 6, 56, kSmall(), kInk);
 
-        int x = -total / 2;
-        int y = -S(10);  // saat blogunun dikey merkezi
+        // --- sag ust: segment tarih, referanstaki "19-03" gibi gun-ay
+        const int dw = 11, dh = 19, dt = 3, dg = 3, dash = 7;
+        int date_w = 4 * dw + 3 * dg + dash;
+        int date_x = right - date_w;
+        for (int i = 0; i < 4; i++) {
+            int x = date_x + i * (dw + dg) + (i >= 2 ? dash : 0);
+            date_digits_[i].Create(root_, x, 28, dw, dh, dt);
+        }
+        MakeBlock(root_, date_x + 2 * (dw + dg) + 1, 28 + dh / 2 - 1, 5, 3, kInk);
+
+        // --- gun adi: buyuk, saga yasli
+        day_ = MakeLabel(root_, left, 54, kLarge(), kInk);
+        lv_obj_set_width(day_, right - left);
+        lv_obj_set_style_text_align(day_, LV_TEXT_ALIGN_RIGHT, 0);
+
+        // --- buyuk saat + ust simge saniye (referansta saatin sag ustunde)
+        int time_w = 4 * kDigitW + 3 * kDigitGap + kColonW;
+        int sec_w = 2 * kSecW + kSecGap;
+        int x = (width - (time_w + kSecPad + sec_w)) / 2;
         for (int i = 0; i < 4; i++) {
             if (i == 2) {
-                colon_ = MakeColon(face, x, y, colon_w, digit_h, thick);
-                x += colon_w + gap;
+                MakeColon(x, kTimeY, kColonW, kDigitH, kDigitT);
+                x += kColonW + kDigitGap;
             }
-            digits_[i].Create(face, x, y, digit_w, digit_h, thick);
-            x += digit_w + gap;
+            digits_[i].Create(root_, x, kTimeY, kDigitW, kDigitH, kDigitT);
+            x += kDigitW + kDigitGap;
         }
-
-        // Saniye: referansta saatin sagina, daha kucuk gosterge olarak duruyor.
-        int sec_w = S(kRefSecW);
-        int sec_h = S(kRefSecH);
-        int sec_thick = std::max(2, S(kRefSecThick));
-        // Saniye saatin sag altina, alt yazi satirinin uzerine oturuyor.
-        // Dikey yeri saat blogundan turetilmiyor; sabit bir referans
-        // noktasindan geliyor ki tarih/hava yazilariyla cakismasin.
-        int sec_x = total / 2 - 2 * sec_w - gap;
-        int sec_y = S(63);
+        x += kSecPad - kDigitGap;
         for (int i = 0; i < 2; i++) {
-            seconds_[i].Create(face, sec_x + i * (sec_w + gap), sec_y, sec_w, sec_h, sec_thick);
+            seconds_[i].Create(root_, x + i * (kSecW + kSecGap), kTimeY, kSecW, kSecH, kSecT);
         }
 
-        // Yazi satirlari. Referansta gun ustte, tarih altta duruyor.
-        day_ = MakeLabel(face, LV_ALIGN_TOP_LEFT, S(14), S(10), kInk);
-        battery_ = MakeLabel(face, LV_ALIGN_TOP_RIGHT, -S(14), S(10), kInk);
-        date_ = MakeLabel(face, LV_ALIGN_BOTTOM_LEFT, S(14), -S(10), kMuted);
-        weather_ = MakeLabel(face, LV_ALIGN_BOTTOM_RIGHT, -S(14), -S(10), kMuted);
+        // --- saatin altinda: sicaklik solda, tam tarih sagda
+        weather_ = MakeLabel(root_, left, kTimeY + kDigitH + 12, kLarge(), kAccent);
+        date_text_ = MakeLabel(root_, left, kTimeY + kDigitH + 18, kSmall(), kMuted);
+        lv_obj_set_width(date_text_, right - left);
+        lv_obj_set_style_text_align(date_text_, LV_TEXT_ALIGN_RIGHT, 0);
+
+        // --- en altta kimlik seridi ("AMOLED 1.8" ESP32 S3 TOUCH" karsiligi)
+        lv_obj_t* strip = MakeLabel(root_, 0, height - 28, kSmall(), kFaint);
+        lv_obj_set_width(strip, width);
+        lv_obj_set_style_text_align(strip, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(strip, "AGON   1.83\" ESP32-S3   TOUCH");
     }
 
     void SetHidden(bool hidden) {
@@ -100,41 +113,56 @@ public:
         }
     }
 
-    // Alt satirda tarih ve hava yan yana duruyor; ic panel 207 px ve tam metin
-    // ("24 Parcali bulutlu") tarihle cakisiyor. Bu yuzde yalnizca sicakligi
-    // gosteriyoruz - board metni "24<derece>  Aciklama" biciminde veriyor,
-    // ilk cift bosluktan kesiyoruz.
+    // Board metni "24<derece>  Aciklama" veriyor; satira yalnizca sicaklik
+    // sigiyor, aciklama tarihle cakisiyordu.
     void SetWeather(const std::string& text) {
         if (weather_ == nullptr) {
             return;
         }
         auto cut = text.find("  ");
-        lv_label_set_text(weather_, cut == std::string::npos ? text.c_str()
-                                                             : text.substr(0, cut).c_str());
+        lv_label_set_text(weather_,
+                          cut == std::string::npos ? text.c_str() : text.substr(0, cut).c_str());
     }
 
     void SetBattery(int level, bool charging) {
         if (battery_ == nullptr) {
             return;
         }
-        lv_label_set_text_fmt(battery_, "%d%s", level, charging ? "%+" : "%");
-        lv_obj_set_style_text_color(battery_, lv_color_hex(level <= 20 ? kWarn : kInk), 0);
+        lv_label_set_text_fmt(battery_, "%d%%%s", level, charging ? " +" : "");
+        lv_obj_set_style_text_color(battery_, lv_color_hex(level <= 20 ? kRed : kInk), 0);
     }
 
-    // Saat gecerli degilse (ag yok, RTC bos) rakamlari sondurup sebebini yaz.
+    void SetVolume(int volume) {
+        if (volume_ != nullptr) {
+            lv_label_set_text_fmt(volume_, "%d", volume);
+        }
+    }
+
+    void SetAlarm(bool enabled, int hour, int minute) {
+        if (alarm_text_ == nullptr) {
+            return;
+        }
+        if (enabled) {
+            lv_label_set_text_fmt(alarm_text_, "ALARM %02d:%02d", hour, minute);
+            lv_obj_set_style_text_color(alarm_text_, lv_color_hex(kInk), 0);
+            lv_obj_set_style_bg_color(alarm_dot_, lv_color_hex(kRed), 0);
+        } else {
+            lv_label_set_text(alarm_text_, "ALARM YOK");
+            lv_obj_set_style_text_color(alarm_text_, lv_color_hex(kFaint), 0);
+            lv_obj_set_style_bg_color(alarm_dot_, lv_color_hex(kFaint), 0);
+        }
+    }
+
     void Update(const struct tm* t) {
         if (root_ == nullptr) {
             return;
         }
         if (t == nullptr || t->tm_year + 1900 < 2024) {
-            for (auto& digit : digits_) {
-                digit.SetBlank();
-            }
-            for (auto& digit : seconds_) {
-                digit.SetBlank();
-            }
+            for (auto& d : digits_) d.SetBlank();
+            for (auto& d : seconds_) d.SetBlank();
+            for (auto& d : date_digits_) d.SetBlank();
             lv_label_set_text(day_, "");
-            lv_label_set_text(date_, "saat alinamadi");
+            lv_label_set_text(date_text_, "saat alinamadi");
             return;
         }
 
@@ -144,92 +172,98 @@ public:
         digits_[3].Set(t->tm_min % 10);
         seconds_[0].Set(t->tm_sec / 10);
         seconds_[1].Set(t->tm_sec % 10);
-        // Iki nokta saniyede bir yanip sonsun - duran ekranin canli oldugunu
-        // gosteren tek isaret bu.
+        date_digits_[0].Set(t->tm_mday / 10);
+        date_digits_[1].Set(t->tm_mday % 10);
+        date_digits_[2].Set((t->tm_mon + 1) / 10);
+        date_digits_[3].Set((t->tm_mon + 1) % 10);
+        // Iki nokta saniyede bir yanip sonsun: duran ekranin canli oldugunu
+        // gosteren tek isaret.
         SetColonOn(t->tm_sec % 2 == 0);
 
         static const char* kDays[] = {"PAZAR",    "PAZARTESI", "SALI", "CARSAMBA",
                                       "PERSEMBE", "CUMA",      "CUMARTESI"};
-        static const char* kMonths[] = {"Ocak",   "Subat",   "Mart", "Nisan", "Mayis", "Haziran",
-                                        "Temmuz", "Agustos", "Eylul", "Ekim", "Kasim", "Aralik"};
+        static const char* kMonths[] = {"Ocak",  "Subat",   "Mart",   "Nisan",
+                                        "Mayis", "Haziran", "Temmuz", "Agustos",
+                                        "Eylul", "Ekim",    "Kasim",  "Aralik"};
         if (t->tm_wday >= 0 && t->tm_wday < 7) {
             lv_label_set_text(day_, kDays[t->tm_wday]);
         }
         if (t->tm_mon >= 0 && t->tm_mon < 12) {
-            lv_label_set_text_fmt(date_, "%d %s", t->tm_mday, kMonths[t->tm_mon]);
+            lv_label_set_text_fmt(date_text_, "%d %s %d", t->tm_mday, kMonths[t->tm_mon],
+                                  t->tm_year + 1900);
         }
     }
 
 private:
-    // Referans cihazin ekrani ve o ekrana gore secilmis olculer. Buradaki
-    // sayilar 368x448 icindir; S() hepsini bizim ekrana tasir.
-    static constexpr int kRefW = 368;
-    static constexpr int kRefH = 448;
-    static constexpr int kRefFrameW = 356;
-    static constexpr int kRefFrameH = 321;
-    static constexpr int kRefFaceW = 327;
-    static constexpr int kRefFaceH = 232;
-    static constexpr int kRefDigitW = 54;
-    static constexpr int kRefDigitH = 91;
-    static constexpr int kRefThick = 11;
-    static constexpr int kRefDigitGap = 8;
-    static constexpr int kRefColonW = 14;
-    static constexpr int kRefSecW = 24;
-    static constexpr int kRefSecH = 39;
-    static constexpr int kRefSecThick = 5;
+    // 240x284 icin secilmis olculer. Saat blogu 160, saniye 33, arada 8 ->
+    // 201 px; 240'a kenar bosluklariyla siger.
+    static constexpr int kMargin = 12;
+    static constexpr int kDigitW = 34;
+    static constexpr int kDigitH = 58;
+    static constexpr int kDigitT = 7;
+    static constexpr int kDigitGap = 5;
+    static constexpr int kColonW = 9;
+    static constexpr int kSecW = 15;
+    static constexpr int kSecH = 25;
+    static constexpr int kSecT = 3;
+    static constexpr int kSecGap = 3;
+    static constexpr int kSecPad = 8;
+    static constexpr int kTimeY = 96;
+    static constexpr int kTagW = 34;
+    static constexpr int kTagH = 18;
 
-    // Referanstan alinan palet: buzlu acik mavi, koyu zemin.
-    static constexpr uint32_t kBackground = 0x1D1A21;
-    static constexpr uint32_t kFrame = 0x232028;
-    static constexpr uint32_t kFrameEdge = 0x3A3737;
-    static constexpr uint32_t kFace = 0x16141A;
+    // Referans fotograftan alinan palet: siyah zemin, buzlu beyaz rakamlar,
+    // camgobegi kenarliklar, kirmizi uyari.
+    static constexpr uint32_t kBg = 0x000000;
     static constexpr uint32_t kInk = 0xDEF2F8;
-    static constexpr uint32_t kDim = 0x262A2E;  // sonmus segment
-    static constexpr uint32_t kMuted = 0xB2A8A8;
-    static constexpr uint32_t kWarn = 0xD81515;
+    static constexpr uint32_t kDim = 0x141A1D;  // sonmus segment
+    static constexpr uint32_t kAccent = 0x37C8D8;
+    static constexpr uint32_t kMuted = 0x9AA7AC;
+    static constexpr uint32_t kFaint = 0x4A5459;
+    static constexpr uint32_t kRed = 0xE02020;
+
+    static const lv_font_t* kSmall() { return &font_noto_sans_basic_14_1; }
+    static const lv_font_t* kLarge() { return &font_noto_sans_basic_20_4; }
 
     // Tek bir yedi-segment basamak. Segment sirasi: a b c d e f g.
+    //
+    // ⚠️ Her basamak KENDI kutusunu aliyor, segmentler o kutuya
+    // LV_ALIGN_TOP_LEFT ile konuyor. Merkez hizalama kullanilirsa yatay (7 px)
+    // ve dikey (26 px) segmentler kendi boylarinin yarisi kadar farkli kayar
+    // ve rakam ikiye boluner - bir surum tam olarak bu yuzden bozuk cikti.
     struct Digit {
         lv_obj_t* seg[7] = {};
+        lv_obj_t* box = nullptr;
 
-        // ⚠️ Her basamak KENDI kutusunu aliyor ve segmentler o kutunun icine
-        // LV_ALIGN_TOP_LEFT ile konuyor. Ilk surumde segmentleri dogrudan
-        // panele LV_ALIGN_CENTER ile koyuyordum; merkez hizalama nesnenin
-        // ORTASINI verilen noktaya oturttugu icin yatay segment (7 px) ile
-        // dikey segment (26 px) kendi boylarinin yarisi kadar farkli
-        // kayiyordu ve her rakam ikiye bolunmus gorunuyordu.
         void Create(lv_obj_t* parent, int x, int y, int w, int h, int t) {
-            box_ = lv_obj_create(parent);
-            lv_obj_remove_style_all(box_);
-            lv_obj_set_size(box_, w, h);
-            lv_obj_align(box_, LV_ALIGN_CENTER, x + w / 2, y);
-            lv_obj_remove_flag(box_, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(box_, LV_OBJ_FLAG_EVENT_BUBBLE);
+            box = lv_obj_create(parent);
+            lv_obj_remove_style_all(box);
+            lv_obj_set_size(box, w, h);
+            lv_obj_align(box, LV_ALIGN_TOP_LEFT, x, y);
+            lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-            int vert = (h - 3 * t) / 2;  // dikey segment boyu
-            int horiz = w - 2 * t;       // yatay segment boyu
+            int vert = (h - 3 * t) / 2;
+            int horiz = w - 2 * t;
             int mid = (h - t) / 2;
-            //          idx      x,        y,           w,      h
-            Make(0, t, 0, horiz, t);              // a  ust
-            Make(1, w - t, t, t, vert);           // b  sag ust
-            Make(2, w - t, mid + t, t, vert);     // c  sag alt
-            Make(3, t, h - t, horiz, t);          // d  alt
-            Make(4, 0, mid + t, t, vert);         // e  sol alt
-            Make(5, 0, t, t, vert);               // f  sol ust
-            Make(6, t, mid, horiz, t);            // g  orta
+            Make(0, t, 0, horiz, t);           // a  ust
+            Make(1, w - t, t, t, vert);        // b  sag ust
+            Make(2, w - t, mid + t, t, vert);  // c  sag alt
+            Make(3, t, h - t, horiz, t);       // d  alt
+            Make(4, 0, mid + t, t, vert);      // e  sol alt
+            Make(5, 0, t, t, vert);            // f  sol ust
+            Make(6, t, mid, horiz, t);         // g  orta
         }
 
         void Set(int value) {
-            // Bit sirasi a=0 ... g=6
             static const uint8_t kMap[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66,
                                              0x6D, 0x7D, 0x07, 0x7F, 0x6F};
             if (value < 0 || value > 9) {
                 SetBlank();
                 return;
             }
-            uint8_t mask = kMap[value];
             for (int i = 0; i < 7; i++) {
-                Paint(i, (mask >> i) & 1);
+                Paint(i, (kMap[value] >> i) & 1);
             }
         }
 
@@ -240,10 +274,8 @@ private:
         }
 
     private:
-        lv_obj_t* box_ = nullptr;
-
         void Make(int index, int x, int y, int w, int h) {
-            lv_obj_t* s = lv_obj_create(box_);
+            lv_obj_t* s = lv_obj_create(box);
             lv_obj_remove_style_all(s);
             lv_obj_set_size(s, w < 1 ? 1 : w, h < 1 ? 1 : h);
             lv_obj_align(s, LV_ALIGN_TOP_LEFT, x, y);
@@ -262,47 +294,53 @@ private:
         }
     };
 
-    int S(int reference_px) const { return static_cast<int>(reference_px * scale_ + 0.5f); }
-
-    lv_obj_t* MakePanel(lv_obj_t* parent, int w, int h, int radius, uint32_t color) {
-        lv_obj_t* panel = lv_obj_create(parent);
-        lv_obj_remove_style_all(panel);
-        lv_obj_set_size(panel, w, h);
-        lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(panel, lv_color_hex(color), 0);
-        lv_obj_set_style_radius(panel, radius, 0);
-        lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(panel, LV_OBJ_FLAG_EVENT_BUBBLE);
-        return panel;
+    lv_obj_t* MakeBlock(lv_obj_t* parent, int x, int y, int w, int h, uint32_t color) {
+        lv_obj_t* b = lv_obj_create(parent);
+        lv_obj_remove_style_all(b);
+        lv_obj_set_size(b, w, h);
+        lv_obj_align(b, LV_ALIGN_TOP_LEFT, x, y);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(color), 0);
+        lv_obj_set_style_radius(b, 1, 0);
+        lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_EVENT_BUBBLE);
+        return b;
     }
 
-    lv_obj_t* MakeLabel(lv_obj_t* parent, lv_align_t align, int x, int y, uint32_t color) {
+    lv_obj_t* MakeLabel(lv_obj_t* parent, int x, int y, const lv_font_t* font, uint32_t color) {
         lv_obj_t* label = lv_label_create(parent);
         lv_label_set_text(label, "");
+        lv_obj_set_style_text_font(label, font, 0);
         lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
-        lv_obj_align(label, align, x, y);
+        lv_obj_align(label, LV_ALIGN_TOP_LEFT, x, y);
         return label;
     }
 
-    lv_obj_t* MakeColon(lv_obj_t* parent, int x, int y, int w, int h, int t) {
-        lv_obj_t* holder = lv_obj_create(parent);
-        lv_obj_remove_style_all(holder);
-        lv_obj_set_size(holder, w, h);
-        // Digit kutusuyla ayni kural: gelen x sol kenar, hizalama merkezden.
-        lv_obj_align(holder, LV_ALIGN_CENTER, x + w / 2, y);
-        lv_obj_remove_flag(holder, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(holder, LV_OBJ_FLAG_EVENT_BUBBLE);
+    // Referanstaki "ALM" / "CHR" kutulari: ince camgobegi kenarlik, icinde
+    // kisa etiket. Deger kutunun saginda ayri yazi olarak duruyor.
+    void MakeTag(int x, int y, const char* text) {
+        lv_obj_t* box = lv_obj_create(root_);
+        lv_obj_remove_style_all(box);
+        lv_obj_set_size(box, kTagW, kTagH);
+        lv_obj_align(box, LV_ALIGN_TOP_LEFT, x, y);
+        lv_obj_set_style_border_width(box, 1, 0);
+        lv_obj_set_style_border_color(box, lv_color_hex(kAccent), 0);
+        lv_obj_set_style_radius(box, 2, 0);
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        lv_obj_t* label = lv_label_create(box);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_font(label, kSmall(), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(kAccent), 0);
+        lv_obj_center(label);
+    }
+
+    void MakeColon(int x, int y, int w, int h, int t) {
         for (int i = 0; i < 2; i++) {
-            lv_obj_t* dot = lv_obj_create(holder);
-            lv_obj_remove_style_all(dot);
-            lv_obj_set_size(dot, t, t);
-            lv_obj_align(dot, LV_ALIGN_CENTER, 0, i == 0 ? -h / 5 : h / 5);
-            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-            lv_obj_set_style_bg_color(dot, lv_color_hex(kInk), 0);
-            lv_obj_set_style_radius(dot, 1, 0);
-            colon_dots_[i] = dot;
+            colon_dots_[i] =
+                MakeBlock(root_, x + (w - t) / 2, y + (i == 0 ? h / 4 : 3 * h / 5), t, t, kInk);
         }
-        return holder;
     }
 
     void SetColonOn(bool on) {
@@ -313,14 +351,16 @@ private:
         }
     }
 
-    float scale_ = 1.0f;
     lv_obj_t* root_ = nullptr;
-    lv_obj_t* colon_ = nullptr;
     lv_obj_t* colon_dots_[2] = {};
-    lv_obj_t* day_ = nullptr;
-    lv_obj_t* date_ = nullptr;
+    lv_obj_t* alarm_dot_ = nullptr;
+    lv_obj_t* alarm_text_ = nullptr;
     lv_obj_t* battery_ = nullptr;
+    lv_obj_t* volume_ = nullptr;
+    lv_obj_t* day_ = nullptr;
+    lv_obj_t* date_text_ = nullptr;
     lv_obj_t* weather_ = nullptr;
     Digit digits_[4];
     Digit seconds_[2];
+    Digit date_digits_[4];
 };

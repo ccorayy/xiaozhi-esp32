@@ -15,6 +15,7 @@
 // (uzgun), egimli ustten ortmek kizgin/supheli goruntusu veriyor.
 // ---------------------------------------------------------------------------
 
+#include "audio_codec.h"
 #include "board.h"
 #include "lvgl_theme.h"
 #include "segment_clock.h"
@@ -135,6 +136,11 @@ public:
     // Kabuk (menu/uygulama) acikken yuzu tamamen gizle
     // Iki saat yuzu var: halkali (ilk tasarim) ve yedi-segment (pocketClock
     // benzeri). Secim NVS'ten geliyor, board veriyor.
+    // Alarm durumunu panel biliyor; segment yuzundeki gostergeye o veriyor.
+    void SetAlarmInfo(bool enabled, int hour, int minute) {
+        segment_clock_.SetAlarm(enabled, hour, minute);
+    }
+
     void SetSegmentFace(bool on) {
         segment_face_ = on;
         if (clock_visible_) {
@@ -476,6 +482,10 @@ private:
             snprintf(pil, sizeof(pil), "%%%d%s", level, charging ? " sarj" : "");
             lv_label_set_text(clock_battery_, pil);
             segment_clock_.SetBattery(level, charging);
+        }
+        auto* codec = Board::GetInstance().GetAudioCodec();
+        if (codec != nullptr) {
+            segment_clock_.SetVolume(codec->output_volume());
         }
         segment_clock_.Update(t);
     }

@@ -1030,6 +1030,8 @@ private:
             return;
         }
         lv_label_set_text_fmt(alarm_time_label_, "%02d:%02d", alarm_hour_, alarm_minute_);
+        // Segment saat yuzundeki alarm gostergesi de guncellensin.
+        eyes_.SetAlarmInfo(alarm_enabled_, alarm_hour_, alarm_minute_);
         if (alarm_enabled_) {
             lv_obj_add_state(alarm_switch_, LV_STATE_CHECKED);
         } else {
