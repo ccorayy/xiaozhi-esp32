@@ -94,29 +94,6 @@ public:
         ApplyExpression(Find(emotion));
     }
 
-    // Sersemleme bittiginde onceki ifadeye donmek icin isaretciyle de
-    // cagirabilmemiz gerekiyor.
-    void ApplyExpression(const Expression* e) {
-        if (e == nullptr) {
-            return;
-        }
-        current_ = e;
-        Apply(left_, e->left);
-        Apply(right_, e->right);
-        RefreshColors();
-        lv_obj_add_flag(blush_l_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(blush_r_, LV_OBJ_FLAG_HIDDEN);
-        if (e->blush) {
-            lv_obj_remove_flag(blush_l_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(blush_r_, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (e->tear) {
-            lv_obj_remove_flag(tear_, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(tear_, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
     // Hava durumu board tarafindan ceklip buraya veriliyor (ornek: "23  Acik").
     void SetWeather(const std::string& text) {
         weather_ = text;
@@ -417,6 +394,29 @@ private:
             lv_obj_set_style_bg_opa(tear_, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_color(tear_, lv_color_hex(0x4FA8FF), 0);
             lv_obj_set_style_radius(tear_, 5, 0);
+            lv_obj_add_flag(tear_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // Sersemleme bittiginde onceki ifadeye donmek icin isaretciyle de
+    // cagirabilmemiz gerekiyor.
+    void ApplyExpression(const Expression* e) {
+        if (e == nullptr) {
+            return;
+        }
+        current_ = e;
+        Apply(left_, e->left);
+        Apply(right_, e->right);
+        RefreshColors();
+        lv_obj_add_flag(blush_l_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(blush_r_, LV_OBJ_FLAG_HIDDEN);
+        if (e->blush) {
+            lv_obj_remove_flag(blush_l_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(blush_r_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (e->tear) {
+            lv_obj_remove_flag(tear_, LV_OBJ_FLAG_HIDDEN);
+        } else {
             lv_obj_add_flag(tear_, LV_OBJ_FLAG_HIDDEN);
         }
     }
