@@ -582,6 +582,17 @@ private:
 
     // ⚠️ Bu LVGL gorevinden cagriliyor; icinde HTTPS YAPMIYORUZ. Liste
     // acilista ayri bir gorevde cekilip onbelleklendi.
+    std::vector<int> RadioFrequencies() {
+        std::vector<int> list;
+        list.reserve(radio_stations_.size());
+        for (const auto& station : radio_stations_) {
+            list.push_back(station.freq_tenths);
+        }
+        return list;
+    }
+
+    int CurrentRadioIndex() const { return radio_index_; }
+
     std::vector<std::string> RadioStationNames() {
         std::vector<std::string> names;
         names.reserve(radio_stations_.size());
@@ -612,6 +623,67 @@ private:
 
     RadioPlayer voice_note_;
     esp_timer_handle_t notify_timer_ = nullptr;
+
+    // ------------------------------------------------------------------
+    // Calan parca - ICY metadata
+    // ------------------------------------------------------------------
+    // Yayinlar ses akisinin arasina "StreamTitle" gomuyor; sunucu bunu okuyup
+    // /radio/now ucundan veriyor. FM radyodaki RDS RadioText'in karsiligi.
+    static constexpr int kTrackPollMs = 20 * 1000;
+
+    int radio_index_ = -1;
+    std::string radio_track_;
+    esp_timer_handle_t track_timer_ = nullptr;
+
+    void InitializeRadioTrack() {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            auto* self = static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg);
+            if (!self->radio_.playing()) {
+                return;
+            }
+            xTaskCreate([](void* p) {
+                static_cast<WaveshareEsp32s3TouchLCD1inch83*>(p)->FetchRadioTrack();
+                vTaskDelete(nullptr);
+            }, "parca", 8192, self, 2, nullptr);
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "parca";
+        if (esp_timer_create(&args, &track_timer_) == ESP_OK) {
+            esp_timer_start_periodic(track_timer_, kTrackPollMs * 1000LL);
+        }
+    }
+
+    void FetchRadioTrack() {
+        if (radio_index_ < 0 || radio_index_ >= static_cast<int>(radio_stations_.size())) {
+            return;
+        }
+        auto network = GetNetwork();
+        if (network == nullptr) {
+            return;
+        }
+        auto http = network->CreateHttp(0);
+        std::string url = std::string(kServiceBase) + "/radio/now?s=" +
+                          radio_stations_[radio_index_].slug;
+        if (http == nullptr || !http->Open("GET", url)) {
+            return;
+        }
+        std::string body;
+        if (http->GetStatusCode() == 200) {
+            body = http->ReadAll();
+        }
+        http->Close();
+
+        std::string track = JsonField(body, "t");
+        if (track != radio_track_) {
+            radio_track_ = track;
+            if (panel_display_ != nullptr) {
+                panel_display_->SetRadioTrack(track);
+            }
+            ESP_LOGI(TAG, "Calan: %s", track.c_str());
+        }
+    }
 
     void InitializeVoiceNotify() {
         esp_timer_create_args_t args = {};
@@ -688,9 +760,11 @@ private:
         if (index < 0 || index >= static_cast<int>(radio_stations_.size())) {
             return;
         }
-        // Radyo ile asistan ayni hoparloru kullaniyor; konusma baslarsa
-        // radyoyu durduruyoruz (bkz. SetOnChatToggle).
+        radio_index_ = index;
+        radio_track_.clear();
         radio_.Play(kServiceBase, radio_stations_[index]);
+        // Calan parcayi hemen bir kez cek, sonra zamanlayici surdursun.
+        FetchRadioTrack();
     }
 
     void InitializeWeather() {
@@ -839,6 +913,10 @@ private:
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
+            // Radyo ekranindayken yan tuslar tuner gibi davraniyor.
+            if (panel_display_ != nullptr && panel_display_->SeekRadio(1)) {
+                return;
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigModeReleasingPort();
@@ -872,6 +950,9 @@ private:
         });
 
         pwr_button_.OnClick([this]() {
+            if (panel_display_ != nullptr && panel_display_->SeekRadio(-1)) {
+                return;
+            }
             auto codec = GetAudioCodec();
             int volume = ((codec->output_volume() / 20) + 1) * 20;
             if (volume > 100) {
@@ -941,10 +1022,14 @@ private:
         SettingsPanelDisplay::RadioHooks radio_hooks;
         radio_hooks.stations = [this]() { return RadioStationNames(); };
         radio_hooks.play = [this](int index) { PlayRadio(index); };
-        radio_hooks.stop = [this]() { radio_.Stop(); };
-        radio_hooks.now_playing = [this]() {
-            return radio_.playing() ? radio_.station_name() : std::string();
+        radio_hooks.stop = [this]() {
+            radio_.Stop();
+            radio_index_ = -1;
+            radio_track_.clear();
         };
+        radio_hooks.frequencies = [this]() { return RadioFrequencies(); };
+        radio_hooks.current = [this]() { return radio_.playing() ? radio_index_ : -1; };
+        radio_hooks.now_playing = [this]() { return radio_track_; };
         settings_display->SetRadioHooks(std::move(radio_hooks));
 
         settings_display->SetOnDizzy([]() {
@@ -1085,6 +1170,7 @@ public:
         InitializeButtons();
         InitializeWeather();
         InitializeGallerySelfTest();
+        InitializeRadioTrack();
         InitializeVoiceNotify();
         InitializeSdServer();
         InitializeTools();

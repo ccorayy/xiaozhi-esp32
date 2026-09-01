@@ -33,6 +33,7 @@
 #include <freertos/task.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,6 +43,7 @@ public:
     struct Station {
         std::string slug;
         std::string name;
+        int freq_tenths = 0;  // 890 = 89.0 MHz, 0 = yalnizca internet
     };
 
     ~RadioPlayer() { Stop(); }
@@ -109,7 +111,8 @@ public:
             if (slug.empty() || name.empty()) {
                 break;
             }
-            list.push_back({slug, name});
+            // "f":89.0 -> 890 (ondalikli sayiyi tam sayida tutuyoruz)
+            list.push_back({slug, name, FreqTenths(body, pos)});
         }
         return list;
     }
@@ -117,6 +120,18 @@ public:
 private:
     static constexpr size_t kMaxStations = 12;
     static constexpr size_t kChunk = 2048;
+
+    // Listedeki "f":89.0 alanini onda birlik tam sayiya cevirir.
+    static int FreqTenths(const std::string& json, size_t& pos) {
+        auto start = json.find("\"f\":", pos);
+        if (start == std::string::npos) {
+            return 0;
+        }
+        start += 4;
+        double value = atof(json.c_str() + start);
+        pos = start;
+        return static_cast<int>(value * 10.0 + 0.5);
+    }
 
     static std::string Field(const std::string& json, const char* key, size_t& pos) {
         auto start = json.find(key, pos);

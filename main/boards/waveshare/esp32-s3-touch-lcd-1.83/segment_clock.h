@@ -20,6 +20,8 @@
 // detay bu.
 // ---------------------------------------------------------------------------
 
+#include "seven_segment.h"
+
 #include <lvgl.h>
 
 #include <cstdio>
@@ -246,79 +248,7 @@ private:
     static const lv_font_t* kSmall() { return &font_noto_sans_basic_14_1; }
     static const lv_font_t* kLarge() { return &font_noto_sans_basic_20_4; }
 
-    // Tek bir yedi-segment basamak. Segment sirasi: a b c d e f g.
-    //
-    // ⚠️ Her basamak KENDI kutusunu aliyor, segmentler o kutuya
-    // LV_ALIGN_TOP_LEFT ile konuyor. Merkez hizalama kullanilirsa yatay (7 px)
-    // ve dikey (26 px) segmentler kendi boylarinin yarisi kadar farkli kayar
-    // ve rakam ikiye boluner - bir surum tam olarak bu yuzden bozuk cikti.
-    struct Digit {
-        lv_obj_t* seg[7] = {};
-        lv_obj_t* box = nullptr;
-        uint32_t on_color = kInk;
-        uint32_t off_color = kDim;
-
-        void Create(lv_obj_t* parent, int x, int y, int w, int h, int t, uint32_t on = kInk,
-                    uint32_t off = kDim) {
-            on_color = on;
-            off_color = off;
-            box = lv_obj_create(parent);
-            lv_obj_remove_style_all(box);
-            lv_obj_set_size(box, w, h);
-            lv_obj_align(box, LV_ALIGN_TOP_LEFT, x, y);
-            lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
-
-            int vert = (h - 3 * t) / 2;
-            int horiz = w - 2 * t;
-            int mid = (h - t) / 2;
-            Make(0, t, 0, horiz, t);           // a  ust
-            Make(1, w - t, t, t, vert);        // b  sag ust
-            Make(2, w - t, mid + t, t, vert);  // c  sag alt
-            Make(3, t, h - t, horiz, t);       // d  alt
-            Make(4, 0, mid + t, t, vert);      // e  sol alt
-            Make(5, 0, t, t, vert);            // f  sol ust
-            Make(6, t, mid, horiz, t);         // g  orta
-        }
-
-        void Set(int value) {
-            static const uint8_t kMap[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66,
-                                             0x6D, 0x7D, 0x07, 0x7F, 0x6F};
-            if (value < 0 || value > 9) {
-                SetBlank();
-                return;
-            }
-            for (int i = 0; i < 7; i++) {
-                Paint(i, (kMap[value] >> i) & 1);
-            }
-        }
-
-        void SetBlank() {
-            for (int i = 0; i < 7; i++) {
-                Paint(i, false);
-            }
-        }
-
-    private:
-        void Make(int index, int x, int y, int w, int h) {
-            lv_obj_t* s = lv_obj_create(box);
-            lv_obj_remove_style_all(s);
-            lv_obj_set_size(s, w < 1 ? 1 : w, h < 1 ? 1 : h);
-            lv_obj_align(s, LV_ALIGN_TOP_LEFT, x, y);
-            lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(s, 1, 0);
-            lv_obj_remove_flag(s, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(s, LV_OBJ_FLAG_EVENT_BUBBLE);
-            seg[index] = s;
-            Paint(index, false);
-        }
-
-        void Paint(int index, bool on) {
-            if (seg[index] != nullptr) {
-                lv_obj_set_style_bg_color(seg[index], lv_color_hex(on ? on_color : off_color), 0);
-            }
-        }
-    };
+    using Digit = SevenSegmentDigit;
 
     lv_obj_t* MakeBlock(lv_obj_t* parent, int x, int y, int w, int h, uint32_t color) {
         lv_obj_t* b = lv_obj_create(parent);

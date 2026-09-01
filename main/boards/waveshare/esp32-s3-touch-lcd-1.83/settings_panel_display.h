@@ -87,9 +87,11 @@ public:
     // Radyo isini board yapiyor; bu sinif ne HTTP ne de ses hattini tanir.
     struct RadioHooks {
         std::function<std::vector<std::string>()> stations;  // gosterilecek adlar
-        std::function<void(int)> play;                       // listedeki sira
+        std::function<std::vector<int>()> frequencies;  // 10x MHz (890 = 89.0), 0 = FM'de yok
+        std::function<void(int)> play;                  // listedeki sira
         std::function<void()> stop;
-        std::function<std::string()> now_playing;            // bos = calmiyor
+        std::function<int()> current;                   // calan sira, yoksa -1
+        std::function<std::string()> now_playing;       // ICY'den parca adi
     };
 
     SettingsPanelDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -119,6 +121,26 @@ public:
 
     void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
     void SetRadioHooks(RadioHooks hooks) { radio_ = std::move(hooks); }
+
+    // Yan tuslar yalnizca radyo ekranindayken istasyon ariyor; baska
+    // ekranlarda kendi gorevlerini (ses / parlaklik / sohbet) koruyorlar.
+    bool SeekRadio(int direction) {
+        if (current_view_ != View::kRadio) {
+            return false;
+        }
+        DisplayLockGuard lock(this);
+        SeekStation(direction);
+        return true;
+    }
+
+    // Calan parca degisince ekrani tazele (board ICY'den ceker).
+    void SetRadioTrack(const std::string& text) {
+        if (radio_track_ == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        lv_label_set_text(radio_track_, text.empty() ? "-" : text.c_str());
+    }
 
     // IMU'dan geliyor. Ikisi de yalnizca uye yaziyor; LVGL'e dokunan is
     // animasyon zamanlayicisinda yapiliyor, o yuzden kilit gerekmiyor.
@@ -455,11 +477,30 @@ private:
 
     // Sayfa 8 - Radyo
     RadioHooks radio_;
-    lv_obj_t* radio_list_ = nullptr;
-    lv_obj_t* radio_status_ = nullptr;
+    lv_obj_t* radio_band_ = nullptr;
+    lv_obj_t* radio_state_ = nullptr;
+    lv_obj_t* radio_station_ = nullptr;
+    lv_obj_t* radio_track_ = nullptr;
+    lv_obj_t* freq_dot_ = nullptr;
     lv_obj_t* radio_stop_button_ = nullptr;
     lv_obj_t* radio_stop_label_ = nullptr;
+    lv_obj_t* radio_prev_button_ = nullptr;
+    lv_obj_t* radio_prev_label_ = nullptr;
+    lv_obj_t* radio_next_button_ = nullptr;
+    lv_obj_t* radio_next_label_ = nullptr;
+    SevenSegmentDigit freq_digits_[4];
     std::vector<std::string> radio_names_;
+    std::vector<int> radio_freqs_;
+
+    // Tuner olculeri ve paleti (kehribar gosterge, camgobegi vurgu)
+    static constexpr int kFreqW = 30;
+    static constexpr int kFreqH = 48;
+    static constexpr int kFreqT = 6;
+    static constexpr int kFreqGap = 5;
+    static constexpr int kDotW = 8;
+    static constexpr uint32_t kTunerInk = 0xFFB020;
+    static constexpr uint32_t kTunerDim = 0x241A08;
+    static constexpr uint32_t kTunerAccent = 0x37C8D8;
 
     // Sayfa 7 - Galeri
     lv_obj_t* gallery_list_ = nullptr;
@@ -848,63 +889,131 @@ private:
     // Sayfa 8 - Radyo
     // ------------------------------------------------------------------
     void BuildRadioTile(lv_obj_t* tile) {
-        radio_status_ = CreateLabel(tile, "-");
-        lv_obj_set_width(radio_status_, lv_pct(100));
-        lv_label_set_long_mode(radio_status_, LV_LABEL_LONG_DOT);
+        // Tuner gorunumu: ustte bant, ortada segment frekans, altta istasyon
+        // ve calan parca. Parca bilgisi ICY metadata'dan geliyor - FM'deki
+        // RDS RadioText'in birebir karsiligi, uydurma degil.
+        //
+        // ⚠️ Kartta FM alicisi YOK. Frekans, istasyonun gercek Istanbul FM
+        // frekansi; sinyal telsizle degil WiFi ile geliyor.
+        lv_obj_t* head = CreateRow(tile);
+        radio_band_ = CreateLabel(head, "FM");
+        lv_obj_set_style_text_color(radio_band_, lv_color_hex(kTunerAccent), 0);
+        radio_state_ = CreateLabel(head, "kapali");
 
-        radio_stop_button_ = CreateButton(tile, "Durdur", &radio_stop_label_);
+        lv_obj_t* dial = lv_obj_create(tile);
+        lv_obj_remove_style_all(dial);
+        lv_obj_set_width(dial, lv_pct(100));
+        lv_obj_set_height(dial, kFreqH + 4);
+        lv_obj_remove_flag(dial, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(dial, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        // "89.0"  ->  uc basamak + nokta + bir basamak
+        int total = 4 * kFreqW + 3 * kFreqGap + kDotW;
+        int x = (width_ - 2 * kSafeInsetX - total) / 2;
+        for (int i = 0; i < 3; i++) {
+            freq_digits_[i].Create(dial, x, 0, kFreqW, kFreqH, kFreqT, kTunerInk, kTunerDim);
+            x += kFreqW + kFreqGap;
+        }
+        freq_dot_ = lv_obj_create(dial);
+        lv_obj_remove_style_all(freq_dot_);
+        lv_obj_set_size(freq_dot_, kFreqT, kFreqT);
+        lv_obj_align(freq_dot_, LV_ALIGN_TOP_LEFT, x, kFreqH - kFreqT);
+        lv_obj_set_style_bg_opa(freq_dot_, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(freq_dot_, lv_color_hex(kTunerInk), 0);
+        x += kDotW + kFreqGap;
+        freq_digits_[3].Create(dial, x, 0, kFreqW, kFreqH, kFreqT, kTunerInk, kTunerDim);
+
+        radio_station_ = CreateLabel(tile, "-");
+        lv_obj_set_width(radio_station_, lv_pct(100));
+        lv_label_set_long_mode(radio_station_, LV_LABEL_LONG_DOT);
+
+        radio_track_ = CreateLabel(tile, "");
+        lv_obj_set_width(radio_track_, lv_pct(100));
+        lv_label_set_long_mode(radio_track_, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(radio_track_, lv_color_hex(kTunerAccent), 0);
+
+        lv_obj_t* keys = CreateRow(tile);
+        radio_prev_button_ = CreateButton(keys, "<", &radio_prev_label_);
+        lv_obj_set_width(radio_prev_button_, lv_pct(30));
+        lv_obj_set_height(radio_prev_button_, 32);
+        lv_obj_add_event_cb(radio_prev_button_, RadioPrevEventCb, LV_EVENT_CLICKED, this);
+
+        radio_stop_button_ = CreateButton(keys, "Durdur", &radio_stop_label_);
+        lv_obj_set_width(radio_stop_button_, lv_pct(34));
         lv_obj_set_height(radio_stop_button_, 32);
         lv_obj_add_event_cb(radio_stop_button_, RadioStopEventCb, LV_EVENT_CLICKED, this);
 
-        // Istasyonlar her aciliista yeniden uretiliyor; etiketleri
-        // plain_labels_ e EKLEMIYORUZ (lv_obj_clean sonrasi StylePanel olu
-        // isaretciye dokunurdu - wifi listesindeki ayni tuzak).
-        radio_list_ = lv_obj_create(tile);
-        lv_obj_set_width(radio_list_, lv_pct(100));
-        lv_obj_set_flex_grow(radio_list_, 1);
-        lv_obj_set_style_bg_opa(radio_list_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(radio_list_, 0, 0);
-        lv_obj_set_style_pad_all(radio_list_, 0, 0);
-        lv_obj_set_style_pad_row(radio_list_, 4, 0);
-        lv_obj_set_flex_flow(radio_list_, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_scroll_dir(radio_list_, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(radio_list_, LV_SCROLLBAR_MODE_OFF);
+        radio_next_button_ = CreateButton(keys, ">", &radio_next_label_);
+        lv_obj_set_width(radio_next_button_, lv_pct(30));
+        lv_obj_set_height(radio_next_button_, 32);
+        lv_obj_add_event_cb(radio_next_button_, RadioNextEventCb, LV_EVENT_CLICKED, this);
+    }
+
+    // Frekansi segmentlere yaz. 0 = yalnizca internet, FM karsiligi yok.
+    void ShowFrequency(int tenths) {
+        if (freq_dot_ == nullptr) {
+            return;
+        }
+        if (tenths <= 0) {
+            for (auto& digit : freq_digits_) {
+                digit.SetBlank();
+            }
+            lv_obj_add_flag(freq_dot_, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        lv_obj_remove_flag(freq_dot_, LV_OBJ_FLAG_HIDDEN);
+        int whole = tenths / 10;
+        // 100 MHz altinda ilk basamak bos kalsin (89.0, 106.2 gibi)
+        freq_digits_[0].Set(whole >= 100 ? whole / 100 : -1);
+        freq_digits_[1].Set((whole / 10) % 10);
+        freq_digits_[2].Set(whole % 10);
+        freq_digits_[3].Set(tenths % 10);
     }
 
     void RefreshRadio() {
-        if (radio_list_ == nullptr) {
+        if (radio_station_ == nullptr) {
             return;
         }
-        std::string now = radio_.now_playing ? radio_.now_playing() : "";
-        lv_label_set_text(radio_status_,
-                          now.empty() ? "Bir istasyon sec" : ("Caliyor: " + now).c_str());
-
-        lv_obj_clean(radio_list_);
         radio_names_ = radio_.stations ? radio_.stations() : std::vector<std::string>();
+        radio_freqs_ = radio_.frequencies ? radio_.frequencies() : std::vector<int>();
+        int index = radio_.current ? radio_.current() : -1;
+
         if (radio_names_.empty()) {
-            lv_label_set_text(radio_status_, "Istasyon listesi alinamadi");
+            lv_label_set_text(radio_state_, "liste yok");
+            lv_label_set_text(radio_station_, "Istasyon listesi alinamadi");
+            lv_label_set_text(radio_track_, "");
+            ShowFrequency(0);
             return;
         }
-        for (size_t i = 0; i < radio_names_.size(); i++) {
-            lv_obj_t* button = lv_button_create(radio_list_);
-            lv_obj_set_width(button, lv_pct(100));
-            lv_obj_set_height(button, 30);
-            lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
-            lv_obj_add_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
-            lv_obj_t* label = lv_label_create(button);
-            lv_label_set_text(label, radio_names_[i].c_str());
-            lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-            lv_obj_set_width(label, lv_pct(100));
-            lv_obj_center(label);
-            lv_obj_add_event_cb(button, RadioPlayEventCb, LV_EVENT_CLICKED, this);
-            if (current_theme_ != nullptr) {
-                auto* theme = static_cast<LvglTheme*>(current_theme_);
-                bool active = !now.empty() && now == radio_names_[i];
-                StyleButton(button, label,
-                            active ? theme->text_color() : theme->chat_background_color(),
-                            active ? theme->background_color() : theme->text_color());
-            }
+        if (index < 0 || index >= static_cast<int>(radio_names_.size())) {
+            lv_label_set_text(radio_state_, "kapali");
+            lv_label_set_text(radio_station_, "Aramak icin < > ya da yan tuslar");
+            lv_label_set_text(radio_track_, "");
+            ShowFrequency(0);
+            return;
         }
+
+        lv_label_set_text(radio_state_, "yayinda");
+        lv_label_set_text(radio_station_, radio_names_[index].c_str());
+        ShowFrequency(index < static_cast<int>(radio_freqs_.size()) ? radio_freqs_[index] : 0);
+        std::string track = radio_.now_playing ? radio_.now_playing() : "";
+        lv_label_set_text(radio_track_, track.empty() ? "-" : track.c_str());
+    }
+
+    // Frekans sirasina gore sonraki/onceki istasyon; sonda basa donuyor.
+    void SeekStation(int direction) {
+        if (radio_names_.empty() && radio_.stations) {
+            radio_names_ = radio_.stations();
+        }
+        if (radio_names_.empty() || !radio_.play) {
+            return;
+        }
+        int count = static_cast<int>(radio_names_.size());
+        int index = radio_.current ? radio_.current() : -1;
+        index = (index < 0) ? (direction > 0 ? 0 : count - 1)
+                            : (((index + direction) % count) + count) % count;
+        radio_.play(index);
+        RefreshRadio();
     }
 
     // ------------------------------------------------------------------
@@ -1625,6 +1734,10 @@ private:
                     theme->text_color());
         StyleButton(radio_stop_button_, radio_stop_label_, theme->chat_background_color(),
                     theme->text_color());
+        StyleButton(radio_prev_button_, radio_prev_label_, theme->chat_background_color(),
+                    theme->text_color());
+        StyleButton(radio_next_button_, radio_next_label_, theme->chat_background_color(),
+                    theme->text_color());
         for (const auto& pair : step_buttons_) {
             StyleButton(pair.button, pair.label, theme->chat_background_color(),
                         theme->text_color());
@@ -1969,14 +2082,14 @@ private:
         self->ShowView(self->current_view_ == View::kPhoto ? View::kGallery : View::kLauncher);
     }
 
-    static void RadioPlayEventCb(lv_event_t* e) {
-        auto* self = Self(e);
-        self->NotifyActivity();
-        int index = RowIndex(e);
-        if (self->radio_.play && index >= 0) {
-            self->radio_.play(index);
-        }
-        self->RefreshRadio();
+    static void RadioPrevEventCb(lv_event_t* e) {
+        Self(e)->NotifyActivity();
+        Self(e)->SeekStation(-1);
+    }
+
+    static void RadioNextEventCb(lv_event_t* e) {
+        Self(e)->NotifyActivity();
+        Self(e)->SeekStation(1);
     }
 
     static void RadioStopEventCb(lv_event_t* e) {
