@@ -3,6 +3,7 @@ set(SOURCES "audio/audio_codec.cc"
             "audio/audio_debugger.cc"
             "audio/audio_service.cc"
             "audio/demuxer/ogg_demuxer.cc"
+            "notify/notify_player.cc"
             "audio/codecs/no_audio_codec.cc"
             "audio/codecs/box_audio_codec.cc"
             "audio/codecs/es8311_audio_codec.cc"
@@ -925,6 +926,8 @@ elseif(CONFIG_LANGUAGE_AR_SA)
     set(LANG_DIR "ar-SA")
 elseif(CONFIG_LANGUAGE_HI_IN)
     set(LANG_DIR "hi-IN")
+elseif(CONFIG_LANGUAGE_MR_IN)
+    set(LANG_DIR "mr-IN")
 elseif(CONFIG_LANGUAGE_PT_PT)
     set(LANG_DIR "pt-PT")
 elseif(CONFIG_LANGUAGE_PL_PL)
