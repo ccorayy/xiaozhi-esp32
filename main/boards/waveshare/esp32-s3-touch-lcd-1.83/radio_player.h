@@ -9,6 +9,9 @@
 //
 //   http->Read(...) -> OggDemuxer::Process(...) -> PushPacketToDecodeQueue()
 //
+// Upstream'in notify oynaticisi (main/notify/) ayni makineyi kullaniyor;
+// demuxer oradan geliyor ve paket suresini Opus TOC baytindan okuyor.
+//
 // PushPacketToDecodeQueue(paket, wait=true) kuyruk dolunca BLOKLUYOR; bu da
 // HTTP okumasini gercek zamana kilitliyor. Akis kontrolu bedavaya geliyor,
 // ayrica arabellek yonetmemiz gerekmiyor.
@@ -152,10 +155,13 @@ private:
         // aninda cokuyor - bir surum tam olarak boyle patladi. PlaySound
         // da bu yuzden make_unique kullaniyor.
         auto demuxer = std::make_unique<OggDemuxer>();
-        demuxer->OnDemuxerFinished([&audio](const uint8_t* data, int sample_rate, size_t size) {
+        demuxer->OnPacket([&audio](const uint8_t* data, int sample_rate, int frame_duration_ms,
+                                   size_t size) {
             auto packet = std::make_unique<AudioStreamPacket>();
             packet->sample_rate = sample_rate;
-            packet->frame_duration = 60;
+            // Paket suresi artik Opus TOC baytindan okunuyor; eskiden 60 ms
+            // varsayiyorduk ve sunucudaki ffmpeg'i ona zorluyorduk.
+            packet->frame_duration = frame_duration_ms;
             packet->payload.resize(size);
             std::memcpy(packet->payload.data(), data, size);
             // wait=true: kuyruk dolunca burada bekliyoruz, HTTP okumasi da
