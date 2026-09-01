@@ -51,13 +51,19 @@ public:
 
     // Calan varsa durdurup yenisini baslatir.
     void Play(const std::string& base_url, const Station& station) {
+        PlayUrl(base_url + "/radio?s=" + station.slug, station.name);
+    }
+
+    // Herhangi bir Ogg/Opus adresi. Radyo sonsuz akis, sesli bildirim ise
+    // kisa bir dosya - ikisi de ayni yol: akis bitince dongu kendi cikiyor.
+    void PlayUrl(const std::string& url, const std::string& label) {
         Stop();
-        url_ = base_url + "/radio?s=" + station.slug;
-        station_name_ = station.name;
+        url_ = url;
+        station_name_ = label;
         stop_requested_ = false;
         playing_ = true;
-        // Demuxer artik obekte ama TLS el sikismasi hala birkac KB istiyor.
-        xTaskCreate(TaskEntry, "radyo", 12288, this, 3, &task_);
+        // Demuxer obekte ama TLS el sikismasi hala birkac KB istiyor.
+        xTaskCreate(TaskEntry, "akis", 12288, this, 3, &task_);
     }
 
     void Stop() {

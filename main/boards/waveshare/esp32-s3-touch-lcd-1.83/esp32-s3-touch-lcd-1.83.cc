@@ -600,6 +600,90 @@ private:
         }, "radyo_liste", 8192, this, 2, nullptr);
     }
 
+    // ------------------------------------------------------------------
+    // Sesli bildirim
+    // ------------------------------------------------------------------
+    // Upstream firmware'de "notify" mesaji var ama xiaozhi sunucusu (v0.9.6)
+    // onu bilmiyor ve baglantilari kayit defterinde tutmuyor - cihaza mesaj
+    // itmenin yolu yok. Sunucuyu yamalamak yerine cihaz kendi soruyor.
+    // Application::StartNotification private oldugu icin de kendi akis
+    // oynaticimizi kullaniyoruz; bildirim kisa bir Ogg/Opus dosyasi.
+    static constexpr int kNotifyPollMs = 30 * 1000;
+
+    RadioPlayer voice_note_;
+    esp_timer_handle_t notify_timer_ = nullptr;
+
+    void InitializeVoiceNotify() {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            auto* self = static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg);
+            // Radyo caliyorsa ya da konusma sürüyorsa hic sormuyoruz:
+            // bildirim sunucuda kuyrukta kalir, sirasi gelince alinir.
+            if (self->radio_.playing() || self->voice_note_.playing()) {
+                return;
+            }
+            if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+                return;
+            }
+            xTaskCreate([](void* p) {
+                static_cast<WaveshareEsp32s3TouchLCD1inch83*>(p)->PollVoiceNotify();
+                vTaskDelete(nullptr);
+            }, "bildirim", 8192, self, 2, nullptr);
+        };
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "bildirim";
+        if (esp_timer_create(&args, &notify_timer_) == ESP_OK) {
+            esp_timer_start_periodic(notify_timer_, kNotifyPollMs * 1000LL);
+        }
+    }
+
+    void PollVoiceNotify() {
+        auto network = GetNetwork();
+        if (network == nullptr) {
+            return;
+        }
+        auto http = network->CreateHttp(0);
+        if (http == nullptr ||
+            !http->Open("GET", std::string(kServiceBase) + "/notify/pending")) {
+            return;
+        }
+        std::string body;
+        if (http->GetStatusCode() == 200) {
+            body = http->ReadAll();
+        }
+        http->Close();
+
+        std::string id = JsonNumber(body, "id");
+        if (id.empty()) {
+            return;  // kuyruk bos - normal durum
+        }
+        std::string text = JsonField(body, "text");
+        ESP_LOGI(TAG, "Sesli bildirim: %s", text.c_str());
+        if (panel_display_ != nullptr && !text.empty()) {
+            panel_display_->ShowNotification(text, 10000);
+        }
+        if (power_save_timer_ != nullptr) {
+            power_save_timer_->WakeUp();
+        }
+        voice_note_.PlayUrl(std::string(kServiceBase) + "/notify/audio?id=" + id, text);
+    }
+
+    // {"id":3,...} - tirnaksiz sayi alani
+    static std::string JsonNumber(const std::string& json, const char* key) {
+        std::string pattern = std::string("\"") + key + "\":";
+        auto start = json.find(pattern);
+        if (start == std::string::npos) {
+            return "";
+        }
+        start += pattern.size();
+        auto end = start;
+        while (end < json.size() && isdigit(static_cast<unsigned char>(json[end]))) {
+            end++;
+        }
+        return json.substr(start, end - start);
+    }
+
     void PlayRadio(int index) {
         if (index < 0 || index >= static_cast<int>(radio_stations_.size())) {
             return;
@@ -1001,6 +1085,7 @@ public:
         InitializeButtons();
         InitializeWeather();
         InitializeGallerySelfTest();
+        InitializeVoiceNotify();
         InitializeSdServer();
         InitializeTools();
         GetBacklight()->RestoreBrightness();
