@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <ctime>
 #include <memory>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <vector>
 
@@ -278,6 +279,48 @@ private:
     }
 
     static constexpr size_t kMaxGalleryFiles = 40;
+
+    // SD sayfasindaki liste: tur ayirmadan, boyutuyla birlikte.
+    std::vector<std::string> SdFileList() {
+        std::vector<std::string> files;
+        if (sd_card_ == nullptr) {
+            return files;
+        }
+        DIR* dir = opendir(SD_MOUNT_POINT);
+        if (dir == nullptr) {
+            return files;
+        }
+        struct dirent* entry = nullptr;
+        while ((entry = readdir(dir)) != nullptr && files.size() < kMaxGalleryFiles) {
+            if (entry->d_name[0] == '.') {
+                continue;
+            }
+            std::string path = std::string(SD_MOUNT_POINT) + "/" + entry->d_name;
+            struct stat st = {};
+            char line[80];
+            if (stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode)) {
+                long kb = static_cast<long>(st.st_size) / 1024;
+                snprintf(line, sizeof(line), "%.28s   %ld KB", entry->d_name, kb);
+            } else {
+                snprintf(line, sizeof(line), "%.28s", entry->d_name);
+            }
+            files.push_back(line);
+        }
+        closedir(dir);
+        std::sort(files.begin(), files.end());
+        return files;
+    }
+
+    // AXP2101 voltaj sunmuyor ama sicaklik veriyor; Bilgi sayfasinda
+    // olmayan gercek bir veri, sarj sirasinda isinmayi da gosteriyor.
+    std::string PmicTemperatureText() {
+        if (pmic_ == nullptr) {
+            return "-";
+        }
+        char text[32];
+        snprintf(text, sizeof(text), "%.1f C", pmic_->GetTemperature());
+        return text;
+    }
 
     int SdFileCount() {
         if (sd_card_ == nullptr) {
@@ -547,6 +590,7 @@ private:
     static constexpr int kWeatherIntervalMs = 20 * 60 * 1000;   // 20 dakika
 
     esp_timer_handle_t weather_timer_ = nullptr;
+    std::string weather_text_;  // MCP araci da okuyor
 
     // ------------------------------------------------------------------
     // Web radyo
@@ -806,6 +850,7 @@ private:
             return;
         }
         std::string text = temp + "\xC2\xB0  " + desc;  // derece isareti (UTF-8)
+        weather_text_ = text;
         ESP_LOGI(TAG, "Hava durumu: %s", text.c_str());
         if (panel_display_ != nullptr) {
             panel_display_->SetWeatherText(text);
@@ -1008,7 +1053,28 @@ private:
         sd_hooks.set_server = [this](bool on) { SetSdServerEnabled(on); };
         sd_hooks.server_url = [this]() { return WifiManager::GetInstance().GetIpAddress(); };
         sd_hooks.list_images = [this]() { return SdImageList(); };
+        sd_hooks.list_files = [this]() { return SdFileList(); };
         settings_display->SetSdHooks(std::move(sd_hooks));
+
+        settings_display->SetTemperatureProvider([this]() { return PmicTemperatureText(); });
+        settings_display->SetServerProvider([]() {
+            Settings settings("wifi", false);
+            std::string url = settings.GetString("ota_url", "");
+            if (url.empty()) {
+                return std::string("varsayilan");
+            }
+            // Yalnizca alan adini goster; tam adres satira sigmiyor.
+            auto start = url.find("://");
+            start = (start == std::string::npos) ? 0 : start + 3;
+            auto end = url.find('/', start);
+            return url.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        });
+        settings_display->SetOnSleepNow([this]() {
+            auto* backlight = GetBacklight();
+            if (backlight != nullptr) {
+                backlight->SetBrightness(0, false);
+            }
+        });
 
         panel_display_ = settings_display;
         display_ = settings_display;
@@ -1098,6 +1164,52 @@ private:
             PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
                 return panel_display_ != nullptr ? panel_display_->GetAlarmText()
                                                  : std::string("yok");
+            });
+
+        // Cihaz kontrolu: asistan menuleri aciyordu ama iclerinde bir sey
+        // yapamiyordu. ⚠️ Her arac sunucuya giden sablonu buyutuyor (Groq'un
+        // dakikalik token siniri), o yuzden yalnizca gunluk kullanilanlar.
+        mcp_server.AddTool("self.audio.set_volume",
+            "Set speaker volume, 0-100.",
+            PropertyList({Property("volume", kPropertyTypeInteger, 0, 100)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto* codec = GetAudioCodec();
+                if (codec == nullptr) {
+                    return false;
+                }
+                codec->SetOutputVolume(properties["volume"].value<int>());
+                return true;
+            });
+
+        mcp_server.AddTool("self.screen.set_brightness",
+            "Set display brightness, 0-100.",
+            PropertyList({Property("brightness", kPropertyTypeInteger, 5, 100)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto* backlight = GetBacklight();
+                if (backlight == nullptr) {
+                    return false;
+                }
+                backlight->SetBrightness(properties["brightness"].value<int>(), true);
+                return true;
+            });
+
+        mcp_server.AddTool("self.battery.get",
+            "Returns battery percentage and whether it is charging.",
+            PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
+                int level = 0;
+                bool charging = false, discharging = false;
+                if (!GetBatteryLevel(level, charging, discharging)) {
+                    return std::string("bilinmiyor");
+                }
+                char text[48];
+                snprintf(text, sizeof(text), "%%%d%s", level, charging ? ", sarj oluyor" : "");
+                return std::string(text);
+            });
+
+        mcp_server.AddTool("self.weather.get",
+            "Returns the outside temperature the device last fetched.",
+            PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
+                return weather_text_.empty() ? std::string("bilinmiyor") : weather_text_;
             });
 
         mcp_server.AddTool("self.system.reconfigure_wifi",

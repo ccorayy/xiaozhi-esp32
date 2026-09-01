@@ -44,6 +44,9 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 
+#include <esp_heap_caps.h>
+#include <esp_mac.h>
+
 #include <esp_app_desc.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -82,6 +85,7 @@ public:
         std::function<void(bool)> set_server;
         std::function<std::string()> server_url;      // "192.168.1.42"
         std::function<std::vector<std::string>()> list_images;
+        std::function<std::vector<std::string>()> list_files;   // kartin kok dizini
     };
 
     // Radyo isini board yapiyor; bu sinif ne HTTP ne de ses hattini tanir.
@@ -120,7 +124,18 @@ public:
     }
 
     void SetSdHooks(SdHooks hooks) { sd_ = std::move(hooks); }
+
+    // Bilgi sayfasi icin board'dan gelen iki deger.
+    void SetTemperatureProvider(std::function<std::string()> provider) {
+        temp_provider_ = std::move(provider);
+    }
+    void SetServerProvider(std::function<std::string()> provider) {
+        server_provider_ = std::move(provider);
+    }
     void SetRadioHooks(RadioHooks hooks) { radio_ = std::move(hooks); }
+
+    // "Ekrani Kapat" kisayolu icin; board parlakligi sifirliyor.
+    void SetOnSleepNow(std::function<void()> callback) { on_sleep_now_ = std::move(callback); }
 
     // Yan tuslar yalnizca radyo ekranindayken istasyon ariyor; baska
     // ekranlarda kendi gorevlerini (ses / parlaklik / sohbet) koruyorlar.
@@ -335,6 +350,10 @@ private:
 
     // Sayfa 2 - Bilgi
     lv_obj_t* info_battery_ = nullptr;
+    lv_obj_t* info_temp_ = nullptr;
+    lv_obj_t* info_ram_ = nullptr;
+    lv_obj_t* info_mac_ = nullptr;
+    lv_obj_t* info_server_ = nullptr;
     lv_obj_t* info_wifi_ = nullptr;
     lv_obj_t* info_ip_ = nullptr;
     lv_obj_t* info_sd_ = nullptr;
@@ -345,6 +364,11 @@ private:
     // Sayfa 3 - Kisayollar
     lv_obj_t* chat_button_ = nullptr;
     lv_obj_t* chat_button_label_ = nullptr;
+    lv_obj_t* mute_button_ = nullptr;
+    lv_obj_t* mute_button_label_ = nullptr;
+    lv_obj_t* sleep_button_ = nullptr;
+    lv_obj_t* sleep_button_label_ = nullptr;
+    int volume_before_mute_ = 60;
     ConfirmButton wifi_confirm_;
     ConfirmButton restart_confirm_;
 
@@ -356,6 +380,11 @@ private:
     bool alarm_enabled_ = false;
     int alarm_last_fired_ = -1;   // gunun dakikasi; ayni dakikada iki kez calmasin
     int alarm_ring_ticks_ = 0;    // caliyorsa kalan saniye
+    int snooze_left_s_ = 0;       // erteleme geri sayimi
+    static constexpr int kSnoozeSeconds = 5 * 60;
+    lv_obj_t* alarm_hint_ = nullptr;
+    lv_obj_t* snooze_button_ = nullptr;
+    lv_obj_t* snooze_button_label_ = nullptr;
     std::function<void()> on_alarm_ring_;
 
     // Sadece +/- adim butonlari; temada yeniden renklendirmek icin listeliyoruz.
@@ -372,6 +401,7 @@ private:
     lv_obj_t* sd_files_ = nullptr;
     lv_obj_t* sd_server_switch_ = nullptr;
     lv_obj_t* sd_url_ = nullptr;
+    lv_obj_t* sd_files_list_ = nullptr;
 
     // Sayfa 8 - Radyo
     RadioHooks radio_;
@@ -405,6 +435,11 @@ private:
     lv_obj_t* gallery_hint_ = nullptr;
     lv_obj_t* photo_image_ = nullptr;
     lv_obj_t* photo_note_ = nullptr;
+    lv_obj_t* photo_prev_button_ = nullptr;
+    lv_obj_t* photo_prev_label_ = nullptr;
+    lv_obj_t* photo_next_button_ = nullptr;
+    lv_obj_t* photo_next_label_ = nullptr;
+    int photo_index_ = 0;
     std::vector<std::string> gallery_files_;
     std::string photo_path_;  // "S:/foo.jpg" - lv_image kaynagi isaretciyi tutuyor
 
@@ -422,9 +457,13 @@ private:
     std::function<void()> on_wifi_config_;
     std::function<void()> on_activity_;
     std::function<std::string()> sd_info_provider_;
+    std::function<void()> on_sleep_now_;
+    std::function<std::string()> temp_provider_;
+    std::function<std::string()> server_provider_;
 
     // Sayfa 4 - WiFi
     lv_obj_t* wifi_status_label_ = nullptr;
+    lv_obj_t* wifi_current_ = nullptr;
     lv_obj_t* wifi_add_button_ = nullptr;
     lv_obj_t* wifi_add_button_label_ = nullptr;
     lv_obj_t* wifi_list_ = nullptr;
@@ -623,13 +662,18 @@ private:
         // giriyor: 3*66 + 2*4 = 206 <= 240 - 2*8.
         lv_obj_set_style_pad_left(launcher_, 8, 0);
         lv_obj_set_style_pad_right(launcher_, 8, 0);
-        lv_obj_set_style_pad_top(launcher_, kSafeInsetTop + 12, 0);
-        lv_obj_set_style_pad_row(launcher_, 8, 0);
+        lv_obj_set_style_pad_top(launcher_, kSafeInsetTop + 4, 0);
+        lv_obj_set_style_pad_row(launcher_, 6, 0);
         lv_obj_set_style_pad_column(launcher_, 4, 0);
         lv_obj_set_flex_flow(launcher_, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(launcher_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_START);
-        lv_obj_remove_flag(launcher_, LV_OBJ_FLAG_SCROLLABLE);
+        // ⚠️ 10 uygulama uc sutunda dort satir ediyor: 14 + 4*64 + 3*6 = 288 px,
+        // ekran 284. Kaydirma KAPALI kalirsa son satir (Kisayol) ekranin
+        // altinda kalip erisilemez oluyordu. Hem olculeri kistik hem dikey
+        // kaydirmayi actik; yeni uygulama eklenince de kendiliginden calisir.
+        lv_obj_set_scroll_dir(launcher_, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(launcher_, LV_SCROLLBAR_MODE_OFF);
         lv_obj_add_flag(launcher_, LV_OBJ_FLAG_EVENT_BUBBLE);
 
         static const AppEntry apps[] = {
@@ -652,7 +696,7 @@ private:
     void AddAppTile(const AppEntry& app) {
         lv_obj_t* cell = lv_obj_create(launcher_);
         lv_obj_remove_style_all(cell);
-        lv_obj_set_size(cell, 66, 74);
+        lv_obj_set_size(cell, 66, 64);
         lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
@@ -664,7 +708,7 @@ private:
 
         lv_obj_t* box = lv_obj_create(cell);
         lv_obj_remove_style_all(box);
-        lv_obj_set_size(box, 46, 46);
+        lv_obj_set_size(box, 42, 42);
         lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(box, lv_color_hex(app.color), 0);
         lv_obj_set_style_radius(box, 12, 0);
@@ -729,11 +773,15 @@ private:
     // ------------------------------------------------------------------
     void BuildInfoTile(lv_obj_t* tile) {
         info_battery_ = CreateInfoRow(tile, "Pil");
+        info_temp_ = CreateInfoRow(tile, "Sicaklik");
         info_wifi_ = CreateInfoRow(tile, "WiFi");
         info_ip_ = CreateInfoRow(tile, "IP");
         info_sd_ = CreateInfoRow(tile, "SD");
         info_version_ = CreateInfoRow(tile, "Surum");
         info_uptime_ = CreateInfoRow(tile, "Calisma");
+        info_ram_ = CreateInfoRow(tile, "Bos RAM");
+        info_mac_ = CreateInfoRow(tile, "MAC");
+        info_server_ = CreateInfoRow(tile, "Sunucu");
     }
 
     lv_obj_t* CreateInfoRow(lv_obj_t* tile, const char* caption) {
@@ -758,8 +806,34 @@ private:
                                }
                            });
 
+        mute_button_ = CreateButton(tile, "Sessize Al", &mute_button_label_);
+        lv_obj_add_event_cb(mute_button_, MuteEventCb, LV_EVENT_CLICKED, this);
+
+        sleep_button_ = CreateButton(tile, "Ekrani Kapat", &sleep_button_label_);
+        lv_obj_add_event_cb(sleep_button_, SleepEventCb, LV_EVENT_CLICKED, this);
+
         SetupConfirmButton(tile, restart_confirm_, "Yeniden Baslat", "Emin misin? Tekrar dokun",
                            []() { esp_restart(); });
+    }
+
+    // Sesi kapatir; kapaliysa eski seviyeye doner. Seviye NVS'e yaziliyor,
+    // o yuzden onceki degeri kendimiz sakliyoruz.
+    void ToggleMute() {
+        auto* codec = Board::GetInstance().GetAudioCodec();
+        if (codec == nullptr) {
+            return;
+        }
+        int volume = codec->output_volume();
+        if (volume > 0) {
+            volume_before_mute_ = volume;
+            codec->SetOutputVolume(0);
+            ShowNotification("Sessiz", 1500);
+        } else {
+            codec->SetOutputVolume(volume_before_mute_);
+            ShowNotification("Ses acildi", 1500);
+        }
+        lv_label_set_text(mute_button_label_,
+                          codec->output_volume() > 0 ? "Sessize Al" : "Sesi Ac");
     }
 
     void SetupConfirmButton(lv_obj_t* tile, ConfirmButton& confirm, const char* idle_text,
@@ -888,6 +962,23 @@ private:
     }
 
     // Frekans sirasina gore sonraki/onceki istasyon; sonda basa donuyor.
+    // Halkali <-> segment saat. Ayarlar'daki anahtarla ayni tercihi
+    // paylasiyor, ikisinden hangisi degistirirse digeri de gorur.
+    void ToggleClockFace() {
+        segment_face_ = !segment_face_;
+        eyes_.SetSegmentFace(segment_face_);
+        Settings settings("face", true);
+        settings.SetBool("segment", segment_face_);
+        if (face_switch_ != nullptr) {
+            if (segment_face_) {
+                lv_obj_add_state(face_switch_, LV_STATE_CHECKED);
+            } else {
+                lv_obj_remove_state(face_switch_, LV_STATE_CHECKED);
+            }
+        }
+        ShowNotification(segment_face_ ? "Segment saat" : "Halkali saat", 1500);
+    }
+
     void SeekStation(int direction) {
         if (radio_names_.empty() && radio_.stations) {
             radio_names_ = radio_.stations();
@@ -939,6 +1030,17 @@ private:
         lv_obj_set_scrollbar_mode(gallery_list_, LV_SCROLLBAR_MODE_OFF);
     }
 
+    // Tam ekran gorselde ileri/geri. Onceden her gorsel icin listeye
+    // donmek gerekiyordu.
+    void ShowNextPhoto(int direction) {
+        if (gallery_files_.empty()) {
+            return;
+        }
+        int count = static_cast<int>(gallery_files_.size());
+        photo_index_ = (((photo_index_ + direction) % count) + count) % count;
+        ShowPhoto(photo_index_);
+    }
+
     void BuildPhotoTile(lv_obj_t* tile) {
         photo_image_ = lv_image_create(tile);
         lv_obj_set_width(photo_image_, lv_pct(100));
@@ -952,6 +1054,17 @@ private:
         photo_note_ = CreateLabel(tile, "");
         lv_obj_set_width(photo_note_, lv_pct(100));
         lv_label_set_long_mode(photo_note_, LV_LABEL_LONG_WRAP);
+
+        lv_obj_t* keys = CreateRow(tile);
+        photo_prev_button_ = CreateButton(keys, "<", &photo_prev_label_);
+        lv_obj_set_width(photo_prev_button_, lv_pct(48));
+        lv_obj_set_height(photo_prev_button_, 30);
+        lv_obj_add_event_cb(photo_prev_button_, PhotoPrevEventCb, LV_EVENT_CLICKED, this);
+
+        photo_next_button_ = CreateButton(keys, ">", &photo_next_label_);
+        lv_obj_set_width(photo_next_button_, lv_pct(48));
+        lv_obj_set_height(photo_next_button_, 30);
+        lv_obj_add_event_cb(photo_next_button_, PhotoNextEventCb, LV_EVENT_CLICKED, this);
     }
 
     void RefreshGallery() {
@@ -996,6 +1109,7 @@ private:
         }
         // Kaynak dizeyi uyede tutuyoruz: lv_image_set_src yolu kopyalamiyor,
         // isaretciyi sakliyor.
+        photo_index_ = index;
         photo_path_ = "S:/" + gallery_files_[index];
 
         // Once basligi oku: bozuk ya da desteklenmeyen dosyada tam cozumu hic
@@ -1047,6 +1161,19 @@ private:
         sd_url_ = CreateLabel(tile, "");
         lv_obj_set_width(sd_url_, lv_pct(100));
         lv_label_set_long_mode(sd_url_, LV_LABEL_LONG_WRAP);
+
+        // Karttaki dosyalar cihazda da gorunsun; oncesinde yalnizca
+        // tarayicidan gorulebiliyordu.
+        sd_files_list_ = lv_obj_create(tile);
+        lv_obj_set_width(sd_files_list_, lv_pct(100));
+        lv_obj_set_flex_grow(sd_files_list_, 1);
+        lv_obj_set_style_bg_opa(sd_files_list_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(sd_files_list_, 0, 0);
+        lv_obj_set_style_pad_all(sd_files_list_, 0, 0);
+        lv_obj_set_style_pad_row(sd_files_list_, 3, 0);
+        lv_obj_set_flex_flow(sd_files_list_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_scroll_dir(sd_files_list_, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(sd_files_list_, LV_SCROLLBAR_MODE_OFF);
     }
 
     void RefreshSd() {
@@ -1059,6 +1186,23 @@ private:
             lv_label_set_text_fmt(sd_files_, "%d", sd_.file_count());
         } else {
             lv_label_set_text(sd_files_, "-");
+        }
+
+        // Dosya adlari; icerik her aciliista yenilendigi icin etiketleri
+        // plain_labels_ e EKLEMIYORUZ (lv_obj_clean sonrasi StylePanel olu
+        // isaretciye dokunurdu).
+        lv_obj_clean(sd_files_list_);
+        std::vector<std::string> files = sd_.list_files ? sd_.list_files()
+                                                        : std::vector<std::string>();
+        for (const auto& name : files) {
+            lv_obj_t* row = lv_label_create(sd_files_list_);
+            lv_label_set_text(row, name.c_str());
+            lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(row, lv_pct(100));
+            if (current_theme_ != nullptr) {
+                lv_obj_set_style_text_color(
+                    row, static_cast<LvglTheme*>(current_theme_)->text_color(), 0);
+            }
         }
 
         bool running = sd_.server_running && sd_.server_running();
@@ -1101,9 +1245,13 @@ private:
         lv_obj_add_flag(alarm_switch_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(alarm_switch_, AlarmSwitchEventCb, LV_EVENT_VALUE_CHANGED, this);
 
-        lv_obj_t* hint = CreateLabel(tile, "Her gun calar. Susturmak icin ekrana dokun.");
-        lv_obj_set_width(hint, lv_pct(100));
-        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        snooze_button_ = CreateButton(tile, "5 dakika ertele", &snooze_button_label_);
+        lv_obj_set_height(snooze_button_, 30);
+        lv_obj_add_event_cb(snooze_button_, SnoozeEventCb, LV_EVENT_CLICKED, this);
+
+        alarm_hint_ = CreateLabel(tile, "Her gun calar. Ekrana dokunmak susturur.");
+        lv_obj_set_width(alarm_hint_, lv_pct(100));
+        lv_label_set_long_mode(alarm_hint_, LV_LABEL_LONG_WRAP);
     }
 
     // step dakika cinsinden: +-1 dakika, +-60 saat. Tek isleyici yetsin diye
@@ -1118,11 +1266,44 @@ private:
         step_buttons_.push_back({button, label});
     }
 
+    // Calarken erteler; calmiyorken alarmi 5 dakika ileri almaz, yalnizca
+    // bilgi verir - yanlislikla saati kaydirmasin.
+    void Snooze() {
+        if (alarm_ring_ticks_ == 0) {
+            ShowNotification("Alarm calmiyor", 1500);
+            return;
+        }
+        alarm_ring_ticks_ = 0;
+        snooze_left_s_ = kSnoozeSeconds;
+        ShowNotification("5 dakika ertelendi", 2000);
+    }
+
+    // Sonraki alarma ne kadar kaldigi - alarm sayfasinda gosteriliyor.
+    std::string TimeUntilAlarm() const {
+        if (!alarm_enabled_) {
+            return "kapali";
+        }
+        time_t now = time(nullptr);
+        struct tm* t = localtime(&now);
+        if (t == nullptr || t->tm_year + 1900 < 2024) {
+            return "saat yok";
+        }
+        int now_min = t->tm_hour * 60 + t->tm_min;
+        int alarm_min = alarm_hour_ * 60 + alarm_minute_;
+        int diff = ((alarm_min - now_min) + 1440) % 1440;
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%d sa %d dk sonra", diff / 60, diff % 60);
+        return buf;
+    }
+
     void RefreshAlarmView() {
         if (alarm_time_label_ == nullptr) {
             return;
         }
         lv_label_set_text_fmt(alarm_time_label_, "%02d:%02d", alarm_hour_, alarm_minute_);
+        if (alarm_hint_ != nullptr) {
+            lv_label_set_text(alarm_hint_, TimeUntilAlarm().c_str());
+        }
         // Segment saat yuzundeki alarm gostergesi de guncellensin.
         eyes_.SetAlarmInfo(alarm_enabled_, alarm_hour_, alarm_minute_);
         if (alarm_enabled_) {
@@ -1159,6 +1340,10 @@ private:
 
     // Saniyede bir, yuz zamanlayicisindan cagriliyor.
     void AlarmTick() {
+        if (snooze_left_s_ > 0 && --snooze_left_s_ == 0) {
+            StartRinging();   // erteleme doldu, tekrar cal
+            return;
+        }
         if (alarm_ring_ticks_ > 0) {
             alarm_ring_ticks_--;
             if (alarm_ring_ticks_ % 3 == 0 && on_alarm_ring_) {
@@ -1212,6 +1397,12 @@ private:
     // Sayfa 4 - WiFi
     // ------------------------------------------------------------------
     void BuildWifiTile(lv_obj_t* tile) {
+        // Bagli agin adi ve IP'si burada da gorunsun; Bilgi sayfasina
+        // gitmeye gerek kalmasin.
+        wifi_current_ = CreateLabel(tile, "-");
+        lv_obj_set_width(wifi_current_, lv_pct(100));
+        lv_label_set_long_mode(wifi_current_, LV_LABEL_LONG_DOT);
+
         wifi_status_label_ = CreateLabel(tile, "-");
         lv_obj_set_width(wifi_status_label_, lv_pct(100));
         lv_label_set_long_mode(wifi_status_label_, LV_LABEL_LONG_DOT);
@@ -1248,6 +1439,12 @@ private:
             return;
         }
         auto& wifi = WifiManager::GetInstance();
+        if (wifi_current_ != nullptr) {
+            lv_label_set_text(wifi_current_,
+                              wifi.IsConnected()
+                                  ? (wifi.GetSsid() + "   " + wifi.GetIpAddress()).c_str()
+                                  : "Bagli degil");
+        }
         if (wifi.IsConnected()) {
             lv_label_set_text_fmt(wifi_status_label_, "%s  %d dBm", wifi.GetSsid().c_str(),
                                   wifi.GetRssi());
@@ -1625,6 +1822,16 @@ private:
                     theme->text_color());
         StyleButton(radio_next_button_, radio_next_label_, theme->chat_background_color(),
                     theme->text_color());
+        StyleButton(photo_prev_button_, photo_prev_label_, theme->chat_background_color(),
+                    theme->text_color());
+        StyleButton(photo_next_button_, photo_next_label_, theme->chat_background_color(),
+                    theme->text_color());
+        StyleButton(mute_button_, mute_button_label_, theme->chat_background_color(),
+                    theme->text_color());
+        StyleButton(snooze_button_, snooze_button_label_, theme->chat_background_color(),
+                    theme->text_color());
+        StyleButton(sleep_button_, sleep_button_label_, theme->chat_background_color(),
+                    theme->text_color());
         for (const auto& pair : step_buttons_) {
             StyleButton(pair.button, pair.label, theme->chat_background_color(),
                         theme->text_color());
@@ -1821,6 +2028,20 @@ private:
         int64_t seconds = esp_timer_get_time() / 1000000;
         lv_label_set_text_fmt(info_uptime_, "%02d:%02d:%02d", static_cast<int>(seconds / 3600),
                               static_cast<int>((seconds / 60) % 60), static_cast<int>(seconds % 60));
+
+        // Ic RAM ve PSRAM ayri ayri; darlik hep icte yasaniyor.
+        lv_label_set_text_fmt(info_ram_, "%d / %d KB",
+                              static_cast<int>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                              static_cast<int>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+
+        uint8_t mac[6] = {};
+        if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+            lv_label_set_text_fmt(info_mac_, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1],
+                                  mac[2], mac[3], mac[4], mac[5]);
+        }
+
+        lv_label_set_text(info_temp_, temp_provider_ ? temp_provider_().c_str() : "-");
+        lv_label_set_text(info_server_, server_provider_ ? server_provider_().c_str() : "-");
     }
 
     void NotifyActivity() {
@@ -1918,7 +2139,10 @@ private:
     // Ekrana dokunmak sohbeti baslatir/bitirir. Turkce wake word mumkun olmadigi
     // icin (ESP-SR sadece Ingilizce/Mandarin) asil kullanim yolu bu.
     void OnScreenClicked() {
-        if (current_view_ != View::kChat || gesture_handled_) {
+        // Saat ekraninda dokunmak da sohbeti baslatiyor; onceden yalnizca
+        // sohbet gorunumunde caliyordu ve saatteyken dokunus bosa gidiyordu.
+        bool shell_free = current_view_ == View::kChat || current_view_ == View::kClock;
+        if (!shell_free || gesture_handled_) {
             return;
         }
         NotifyActivity();
@@ -1943,6 +2167,22 @@ private:
             // Her yerden sohbete
             gesture_handled_ = true;
             ShowView(View::kChat);
+        } else if (dir == LV_DIR_RIGHT) {
+            gesture_handled_ = true;
+            if (current_view_ == View::kClock) {
+                // Saat ekraninda yan kaydirma yuz degistirir - Ayarlar'a
+                // gitmeden. Cift dokunma yerine kaydirma sectik: tek dokunma
+                // sohbeti baslatiyor, gecikme istemedik.
+                ToggleClockFace();
+            } else if (current_view_ != View::kChat) {
+                // Uygulama ekranlarinda saga kaydirma = geri
+                ShowView(current_view_ == View::kPhoto ? View::kGallery : View::kLauncher);
+            }
+        } else if (dir == LV_DIR_LEFT) {
+            if (current_view_ == View::kClock) {
+                gesture_handled_ = true;
+                ToggleClockFace();
+            }
         }
     }
 
@@ -1988,6 +2228,16 @@ private:
         self->RefreshRadio();
     }
 
+    static void PhotoPrevEventCb(lv_event_t* e) {
+        Self(e)->NotifyActivity();
+        Self(e)->ShowNextPhoto(-1);
+    }
+
+    static void PhotoNextEventCb(lv_event_t* e) {
+        Self(e)->NotifyActivity();
+        Self(e)->ShowNextPhoto(1);
+    }
+
     static void GalleryRowClickedCb(lv_event_t* e) {
         auto* self = Self(e);
         self->NotifyActivity();
@@ -2006,6 +2256,18 @@ private:
     static void BrightnessEventCb(lv_event_t* e) { Self(e)->OnBrightnessEvent(e); }
     static void ThemeEventCb(lv_event_t* e) { Self(e)->OnThemeEvent(); }
     static void ChatEventCb(lv_event_t* e) { Self(e)->OnChatButton(); }
+    static void MuteEventCb(lv_event_t* e) {
+        Self(e)->NotifyActivity();
+        Self(e)->ToggleMute();
+    }
+    static void SleepEventCb(lv_event_t* e) {
+        auto* self = Self(e);
+        // Ekrani hemen kapat; dokunma ya da hareket geri aciyor.
+        self->ShowView(View::kClock);
+        if (self->on_sleep_now_) {
+            self->on_sleep_now_();
+        }
+    }
 
     static void AlarmStepEventCb(lv_event_t* e) {
         auto* self = Self(e);
@@ -2027,6 +2289,11 @@ private:
         self->eyes_.SetSegmentFace(self->segment_face_);
         Settings settings("face", true);
         settings.SetBool("segment", self->segment_face_);
+    }
+
+    static void SnoozeEventCb(lv_event_t* e) {
+        Self(e)->NotifyActivity();
+        Self(e)->Snooze();
     }
 
     static void AlarmSwitchEventCb(lv_event_t* e) {
