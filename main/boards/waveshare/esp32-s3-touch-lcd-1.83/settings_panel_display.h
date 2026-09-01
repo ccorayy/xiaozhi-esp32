@@ -148,104 +148,6 @@ public:
     void TriggerDizzy() { eyes_.TriggerDizzy(); }
     void SetOnDizzy(std::function<void()> callback) { eyes_.SetOnDizzy(std::move(callback)); }
 
-    // GECICI TESHIS: raporu board sunucuya gonderiyor (ekran guvenilir degil,
-    // gelen sohbet mesaji gorunumu degistirip raporu siliyor).
-    void SetDiagnosticReporter(std::function<void(const std::string&)> reporter) {
-        diagnostic_reporter_ = std::move(reporter);
-    }
-
-    // GECICI TESHIS: galeri siyah ekran veriyor. Baslik okunabiliyor (en/boy
-    // dogru yaziliyor) ama cizim bos. Hangi asamada koptugunu cihazin kendisi
-    // soylesin diye acilista karttaki ilk gorseli cozmeyi deniyoruz.
-    //
-    // Sonuc hem seri porta hem EKRANA yaziliyor: kablo takili olmayabilir,
-    // o zaman kullanici okuyup soyluyor. LVGL'in kendi uyarisi da
-    // lv_log_register_print_cb ile yakalanip ekrana ekleniyor - asil sebep
-    // genelde orada.
-    // Sorun bulununca bu metot, kancasi ve LV_USE_LOG kaldirilacak.
-    void LogImageDecodeSelfTest() {
-        static const char* kTag = "GaleriTest";
-        // ⚠️ Onceki surumde bunlar sabit bir char[512] ve elle ilerleyen bir
-        // "used" sayaci ile yaziliyordu. snprintf yazdigi degil YAZACAGI
-        // uzunlugu donduruyor; uzun LVGL uyarilariyla sayac tamponu asiyor ve
-        // sonraki snprintf tamponun disina yaziyordu. Cihaz 20. saniyede
-        // cokuyordu - yani teshis kodu teshis edilecek seyi gizliyordu.
-        // std::string ile o sinif hata tamamen kalkiyor.
-        std::string summary;
-        char line[192];
-
-        if (!sd_.list_images) {
-            ESP_LOGW(kTag, "SD kancasi yok");
-            return;
-        }
-        auto files = sd_.list_images();
-        if (files.empty()) {
-            ESP_LOGW(kTag, "Kartta gorsel yok");
-            return;
-        }
-
-        DisplayLockGuard lock(this);
-
-        // DIKKAT: lv_result_t'de LV_RESULT_INVALID=0, LV_RESULT_OK=1.
-        // Ilk surumde "0=OK" yazmisim, tam tersi. lv_fs_res_t ise 0=OK.
-        int drawable = -1;
-        size_t count = files.size() < 4 ? files.size() : 4;
-        for (size_t i = 0; i < count; i++) {
-            std::string path = "S:/" + files[i];
-            lvgl_message_[0] = '\0';
-
-            uint8_t head[4] = {};
-            uint32_t read = 0;
-            lv_fs_file_t file;
-            if (lv_fs_open(&file, path.c_str(), LV_FS_MODE_RD) == LV_FS_RES_OK) {
-                lv_fs_read(&file, head, sizeof(head), &read);
-                lv_fs_close(&file);
-            }
-
-            lv_image_header_t header = {};
-            bool info_ok = lv_image_decoder_get_info(path.c_str(), &header) == LV_RESULT_OK;
-            if (info_ok && drawable < 0) {
-                drawable = static_cast<int>(i);
-            }
-
-            ESP_LOGI(kTag, "%s: %02X%02X info=%s %dx%d | LVGL: %s", files[i].c_str(), head[0],
-                     head[1], info_ok ? "OK" : "HATA", static_cast<int>(header.w),
-                     static_cast<int>(header.h),
-                     lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
-            // Ekran dar; dosya adi ve uyari kirpiliyor.
-            snprintf(line, sizeof(line), "%.11s %02X%02X %s %dx%d\n%.60s\n", files[i].c_str(),
-                     head[0], head[1], info_ok ? "OK" : "HATA", static_cast<int>(header.w),
-                     static_cast<int>(header.h),
-                     lvgl_message_[0] != '\0' ? lvgl_message_ : "-");
-            summary += line;
-        }
-
-        // Basligi okunabilen ilk dosyayi gercekten cizdir: cozucu tam cozmede
-        // patlarsa uyarisini burada birakir.
-        if (drawable >= 0) {
-            lvgl_message_[0] = '\0';
-            ShowPhoto(drawable);
-            lv_refr_now(nullptr);
-            ESP_LOGI(kTag, "cizim sonrasi LVGL: %s",
-                     lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
-            // Olculer de rapora girsin: cozme basarili ama ekran bossa sorun
-            // yerlesimdedir, cevap bu sayilarda.
-            snprintf(line, sizeof(line), "img %dx%d olcek %d\nCIZIM: %.70s",
-                     static_cast<int>(lv_obj_get_width(photo_image_)),
-                     static_cast<int>(lv_obj_get_height(photo_image_)),
-                     static_cast<int>(lv_image_get_scale(photo_image_)),
-                     lvgl_message_[0] != '\0' ? lvgl_message_ : "(uyari yok)");
-        } else {
-            snprintf(line, sizeof(line), "CIZIM: denenmedi");
-            ShowView(View::kPhoto);
-        }
-        summary += line;
-        lv_label_set_text(photo_note_, summary.c_str());
-        if (diagnostic_reporter_) {
-            diagnostic_reporter_(summary);
-        }
-    }
-
     // Alarm caldiginda board ses calsin ve ekrani uyandirsin diye.
     void SetOnAlarmRing(std::function<void()> callback) { on_alarm_ring_ = std::move(callback); }
 
@@ -324,10 +226,6 @@ public:
 
     virtual void SetupUI() override {
         SpiLcdDisplay::SetupUI();
-
-        // GECICI: LVGL'in uyarilarini yakala ki teshis ekrana da yazilabilsin
-        // (kablo takili olmayabilir). Teshis bitince kaldirilacak.
-        lv_log_register_print_cb(LvglLogCb);
 
         DisplayLockGuard lock(this);
         ApplySafeAreaInsets();
@@ -510,16 +408,6 @@ private:
     std::vector<std::string> gallery_files_;
     std::string photo_path_;  // "S:/foo.jpg" - lv_image kaynagi isaretciyi tutuyor
 
-    // GECICI TESHIS: LVGL'in son uyarisi. Statik cunku geri cagirma islevi
-    // nesneyi tanimiyor; zaten tek ekran var.
-    static inline char lvgl_message_[160] = {};
-
-    static void LvglLogCb(lv_log_level_t level, const char* text) {
-        if (level < LV_LOG_LEVEL_WARN || text == nullptr) {
-            return;
-        }
-        snprintf(lvgl_message_, sizeof(lvgl_message_), "%s", text);
-    }
 
     // Tema degisiminde yeniden renklendirilecek duz yazi etiketleri.
     std::vector<lv_obj_t*> plain_labels_;
@@ -534,7 +422,6 @@ private:
     std::function<void()> on_wifi_config_;
     std::function<void()> on_activity_;
     std::function<std::string()> sd_info_provider_;
-    std::function<void(const std::string&)> diagnostic_reporter_;  // GECICI
 
     // Sayfa 4 - WiFi
     lv_obj_t* wifi_status_label_ = nullptr;

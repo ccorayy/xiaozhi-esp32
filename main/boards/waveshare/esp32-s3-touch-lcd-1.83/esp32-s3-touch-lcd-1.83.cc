@@ -548,30 +548,6 @@ private:
 
     esp_timer_handle_t weather_timer_ = nullptr;
 
-    // GECICI TESHIS: galeri siyah ekran veriyor. Acilistan 20 sn sonra
-    // karttaki ilk gorseli cozmeyi deneyip sonucu seri porta yaziyoruz.
-    // Kullanicinin ekrana dokunmasini beklemeden nerede koptugunu gorelim.
-    esp_timer_handle_t gallery_test_timer_ = nullptr;
-
-    void InitializeGallerySelfTest() {
-        esp_timer_create_args_t args = {};
-        args.callback = [](void* arg) {
-            auto* self = static_cast<WaveshareEsp32s3TouchLCD1inch83*>(arg);
-            // Cozme islemi esp_timer gorevinin kucuk yiginina gore agir.
-            Application::GetInstance().Schedule([self]() {
-                if (self->panel_display_ != nullptr) {
-                    self->panel_display_->LogImageDecodeSelfTest();
-                }
-            });
-        };
-        args.arg = this;
-        args.dispatch_method = ESP_TIMER_TASK;
-        args.name = "galeri_test";
-        if (esp_timer_create(&args, &gallery_test_timer_) == ESP_OK) {
-            esp_timer_start_once(gallery_test_timer_, 20 * 1000 * 1000LL);
-        }
-    }
-
     // ------------------------------------------------------------------
     // Web radyo
     // ------------------------------------------------------------------
@@ -799,26 +775,6 @@ private:
         }
     }
 
-    // GECICI TESHIS: galeri raporunu sunucuya gonderir. Statik cunku kisa
-    // omurlu bir gorevden cagriliyor. Galeri sorunu cozulunce kaldirilacak.
-    static void PostDiagnostic(const std::string& body) {
-        auto network = Board::GetInstance().GetNetwork();
-        if (network == nullptr) {
-            return;
-        }
-        auto http = network->CreateHttp(0);
-        if (http == nullptr) {
-            return;
-        }
-        http->SetContent(std::string(body));
-        if (http->Open("POST", "https://hava.shoptimize.com.tr/log")) {
-            ESP_LOGI(TAG, "Teshis raporu gonderildi (%d)", http->GetStatusCode());
-            http->Close();
-        } else {
-            ESP_LOGW(TAG, "Teshis raporu gonderilemedi");
-        }
-    }
-
     bool TryFetchWeather(const char* url, std::string& body) {
         auto network = GetNetwork();
         if (network == nullptr) {
@@ -869,7 +825,13 @@ private:
     }
 
     void InitializePowerSaveTimer() {
-        power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
+        // (cpu_max_freq, ekrani kis, cihazi kapat) - saniye.
+        // ⚠️ Kapanma 300 idi: pildeyken 5 dakika dokunulmayinca cihaz TAMAMEN
+        // kapaniyordu. Masa saati olarak bakmak isteyince olu buluyordun.
+        // 1800'e cikarildi - unutulan cihaz yine pili bitirmiyor ama 5 dakika
+        // ceza kesmiyor. (Sarjdayken zaten devre disi: SetEnabled(discharging).)
+        // IMU hareketi de sayaci sifirliyor, eline alman yetiyor.
+        power_save_timer_ = new PowerSaveTimer(-1, 60, 1800);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(20); });
@@ -1046,15 +1008,6 @@ private:
         sd_hooks.set_server = [this](bool on) { SetSdServerEnabled(on); };
         sd_hooks.server_url = [this]() { return WifiManager::GetInstance().GetIpAddress(); };
         sd_hooks.list_images = [this]() { return SdImageList(); };
-        settings_display->SetDiagnosticReporter([this](const std::string& text) {
-            // Ag islemi LVGL/ana gorevde bloklamasin diye kisa omurlu gorev.
-            auto* copy = new std::string(text);
-            xTaskCreate([](void* p) {
-                std::unique_ptr<std::string> body(static_cast<std::string*>(p));
-                PostDiagnostic(*body);
-                vTaskDelete(nullptr);
-            }, "teshis", 4096, copy, 2, nullptr);
-        });
         settings_display->SetSdHooks(std::move(sd_hooks));
 
         panel_display_ = settings_display;
@@ -1169,7 +1122,6 @@ public:
         InitializeTouch();
         InitializeButtons();
         InitializeWeather();
-        InitializeGallerySelfTest();
         InitializeRadioTrack();
         InitializeVoiceNotify();
         InitializeSdServer();
