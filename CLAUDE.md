@@ -154,6 +154,26 @@ varsayımıyla X'e geçtim ve çalışan davranışı bozdum. Doğrusu Z + histe
   Yüz zamanlayıcısı (1 sn) tetikliyor; çalınca saat ekranına geçip `OGG_VIBRATION`'ı 3 saniyede
   bir en fazla 1 dakika çalıyor, ekrana dokunmak susturuyor. MCP: `self.alarm.set` / `self.alarm.get`.
 
+### Web radyo + sesli bildirim ✅ / segment saat + hareketli gözler ✅
+
+- **Segment saat** (`segment_clock.h`): VolosR/pocketClock görünümü, 240×284'e ölçeklenmiş.
+  Rakamlar font değil, **çizilmiş yedi dikdörtgen** (referansın G7 fontu 187 KB ve ticaride
+  lisanslı). Ayarlar'daki anahtarla halkalı saatle değiştiriliyor, tercih NVS'te.
+- **Gözler eğimi takip ediyor** (`eyes_face.h`): bebek + parlama noktası, yay-sönüm fiziği,
+  50 ms'lik ayrı animasyon zamanlayıcısı. Sallayınca sersemleme → kızgın → normal.
+  `SetGazeTarget`/`TriggerDizzy` bilerek yalnızca üye yazıyor, IMU görevinden kilitsiz çağrılıyor.
+- **Web radyo** (`radio_player.h`): `http->Read → OggDemuxer::Process → PushPacketToDecodeQueue`.
+  `wait=true` kuyruk dolunca bloklayıp HTTP okumasını gerçek zamana kilitliyor — akış kontrolü
+  bedava. Ses çıkışını oynatma görevi kendi açıyor.
+- **Sesli bildirim**: cihaz 30 sn'de bir sunucuya soruyor, bekleyen varsa çalıyor.
+
+⚠️ **`OggDemuxer` yığında oluşturulmaz.** İçinde paket tamponu var (upstream 8192'den 2048'e
+indirdi ama hâlâ büyük); yığında oluşturmak görevin yığınını yiyip cihazı çökertiyor. `PlaySound`
+da bu yüzden `make_unique` kullanıyor. Radyo bir sürüm bu yüzden açılışta çöktü.
+
+⚠️ **TLS'i LVGL görevinden çalıştırma.** İstasyon listesini arayüz görevinden çekiyordum; çalıştı
+ama aynı sınıftan hata. Ağ işleri kısa ömürlü kendi görevlerinde (≥8 KB yığın).
+
 ⚠️ `I2cDevice::ReadReg` içinde `ESP_ERROR_CHECK` var — çip yoksa cihaz komple çöker. Hem IMU hem
 RTC önce `i2c_master_probe` ile yoklanıyor, okumalar da elle (`i2c_master_transmit_receive`)
 yapılıp hata yutuluyor. Yeni I2C çipi eklerken bu kalıbı kopyala.
@@ -161,6 +181,12 @@ yapılıp hata yutuluyor. Yeni I2C çipi eklerken bu kalıbı kopyala.
 ---
 
 ## 4. Derleme — GitHub Actions
+
+> **Upstream senkronu `merge` ile yapıldı (16 Ağu 2026), rebase ile değil.** 61 commit'i tek tek
+> oynatmak yerine birleştirildi; fork upstream'e PR göndermiyor, tek çakışma `main/CMakeLists.txt`
+> oldu. Bir sonraki senkronda da aynısını yap: `git fetch upstream && git merge upstream/main`.
+> Kazanılanlar: **notify** (sunucudan sesli bildirim akışı), yeniden yazılmış `OggDemuxer`
+> (2 KB tampon, paket süresi Opus TOC baytından), boşta saat düzeltmesi.
 
 Yerelde ESP-IDF kurulu değil. Derleme `.github/workflows/agon-build.yml` ile yapılır.
 
