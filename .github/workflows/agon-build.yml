@@ -19,7 +19,7 @@ jobs:
     name: Waveshare ESP32-S3-Touch-LCD-1.83 (Turkce)
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:v6.0.2
+      image: espressif/idf:v6.1
 
     steps:
       - name: Kaynagi indir

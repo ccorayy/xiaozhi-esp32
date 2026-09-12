@@ -687,10 +687,10 @@ private:
         std::string url = std::string(kServiceBase) + "/radio/now?s=" +
                           radio_stations_[radio_index_].slug;
         if (http == nullptr || !http->Open("GET", url)) {
-            return;
+            return;  // sarki adi kozmetik, sessizce gec
         }
         std::string body;
-        if (http->GetStatusCode() == 200) {
+        if (auto status = http->GetStatusCode(); status && *status == 200) {
             body = http->ReadAll();
         }
         http->Close();
@@ -736,12 +736,17 @@ private:
             return;
         }
         auto http = network->CreateHttp(0);
-        if (http == nullptr ||
-            !http->Open("GET", std::string(kServiceBase) + "/notify/pending")) {
+        if (http == nullptr) {
+            return;
+        }
+        if (auto opened = http->Open("GET", std::string(kServiceBase) + "/notify/pending");
+            !opened) {
+            ESP_LOGW(TAG, "Bildirim yoklamasi basarisiz: %s",
+                     opened.error().ToString().c_str());
             return;
         }
         std::string body;
-        if (http->GetStatusCode() == 200) {
+        if (auto status = http->GetStatusCode(); status && *status == 200) {
             body = http->ReadAll();
         }
         http->Close();
@@ -825,10 +830,15 @@ private:
             return false;
         }
         auto http = network->CreateHttp(0);
-        if (http == nullptr || !http->Open("GET", url)) {
+        if (http == nullptr) {
             return false;
         }
-        bool ok = http->GetStatusCode() == 200;
+        if (auto opened = http->Open("GET", url); !opened) {
+            ESP_LOGW(TAG, "Hava durumu acilamadi: %s", opened.error().ToString().c_str());
+            return false;
+        }
+        auto status = http->GetStatusCode();
+        bool ok = status && *status == 200;
         if (ok) {
             body = http->ReadAll();
         }

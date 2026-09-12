@@ -93,11 +93,16 @@ public:
             return list;
         }
         auto http = network->CreateHttp(0);
-        if (http == nullptr || !http->Open("GET", base_url + "/radio/list")) {
+        if (http == nullptr) {
+            return list;
+        }
+        if (auto opened = http->Open("GET", base_url + "/radio/list"); !opened) {
+            ESP_LOGW("Radyo", "Istasyon listesi alinamadi: %s",
+                     opened.error().ToString().c_str());
             return list;
         }
         std::string body;
-        if (http->GetStatusCode() == 200) {
+        if (auto status = http->GetStatusCode(); status && *status == 200) {
             body = http->ReadAll();
         }
         http->Close();
@@ -157,13 +162,28 @@ private:
         auto network = Board::GetInstance().GetNetwork();
         auto http = network != nullptr ? network->CreateHttp(0) : nullptr;
 
-        if (http == nullptr || !http->Open("GET", url_)) {
-            ESP_LOGW(kTag, "Baglanilamadi: %s", url_.c_str());
+        if (http == nullptr) {
+            ESP_LOGW(kTag, "Ag hazir degil");
             playing_ = false;
             return;
         }
-        if (http->GetStatusCode() != 200) {
-            ESP_LOGW(kTag, "Sunucu %d dondu", http->GetStatusCode());
+        // Http artik std::expected donuyor; hata metni DNS mi, TLS mi, zaman
+        // asimi mi oldugunu soyluyor - eskiden sadece "baglanilamadi" vardi.
+        if (auto opened = http->Open("GET", url_); !opened) {
+            ESP_LOGW(kTag, "Baglanilamadi (%s): %s", url_.c_str(),
+                     opened.error().ToString().c_str());
+            playing_ = false;
+            return;
+        }
+        auto status = http->GetStatusCode();
+        if (!status) {
+            ESP_LOGW(kTag, "Durum okunamadi: %s", status.error().ToString().c_str());
+            http->Close();
+            playing_ = false;
+            return;
+        }
+        if (*status != 200) {
+            ESP_LOGW(kTag, "Sunucu %d dondu", *status);
             http->Close();
             playing_ = false;
             return;
@@ -193,13 +213,18 @@ private:
 
         std::vector<char> buffer(kChunk);
         while (!stop_requested_.load()) {
-            int n = http->Read(buffer.data(), buffer.size());
-            if (n <= 0) {
-                ESP_LOGW(kTag, "Akis kesildi (%d)", n);
+            auto n = http->Read(buffer.data(), buffer.size());
+            if (!n) {
+                ESP_LOGW(kTag, "Akis kesildi: %s", n.error().ToString().c_str());
+                break;
+            }
+            if (*n == 0) {
+                // Radyo sonsuz akis; burasi yalnizca sesli bildirim gibi
+                // sonlu dosyalarda normal cikis.
                 break;
             }
             demuxer->Process(reinterpret_cast<const uint8_t*>(buffer.data()),
-                            static_cast<size_t>(n));
+                            static_cast<size_t>(*n));
         }
 
         http->Close();
