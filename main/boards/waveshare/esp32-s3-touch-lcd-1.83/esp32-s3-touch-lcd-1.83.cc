@@ -68,6 +68,20 @@ public:
         WriteReg(0x61, 0x02); // set Main battery precharge current to 50mA
         WriteReg(0x62, 0x08); // set Main battery charger current to 400mA ( 0x08-200mA, 0x09-300mA, 0x0A-400mA )
         WriteReg(0x63, 0x01); // set Main battery term charge current to 25mA
+
+        // VBAT olcum kanalini ac. Oku-degistir-yaz: 0x30'daki diger
+        // kanallar (TS pini sarj kontrolunde kullaniliyor) bozulmasin.
+        WriteReg(0x30, ReadReg(0x30) | 0x01);
+    }
+
+    // AXP2101 pil voltajini 0x34/0x35'te 5+8 bit halinde, dogrudan mV
+    // cinsinden veriyor. Ust sinif Axp2101 bunu sunmuyor; upstream'in yeni
+    // xpower.h sarmalayicisina gecmek butun ray kurulumunu XPowersLib'in
+    // begin()'ine devretmek demekti - iki register okumak cok daha ucuz ve
+    // yukaridaki ayarlara dokunmuyor.
+    int GetBatteryVoltageMv() {
+        int mv = ((ReadReg(0x34) & 0x1F) << 8) | ReadReg(0x35);
+        return mv > 2500 && mv < 5000 ? mv : 0;  // pil yoksa cop deger geliyor
     }
 };
 
@@ -311,8 +325,8 @@ private:
         return files;
     }
 
-    // AXP2101 voltaj sunmuyor ama sicaklik veriyor; Bilgi sayfasinda
-    // olmayan gercek bir veri, sarj sirasinda isinmayi da gosteriyor.
+    // Sarj sirasinda isinmayi gosteriyor. Voltaj artik ayri: Pmic
+    // 0x34/0x35'ten okuyup Pil satirina yaziyor.
     std::string PmicTemperatureText() {
         if (pmic_ == nullptr) {
             return "-";
@@ -1067,6 +1081,8 @@ private:
         settings_display->SetSdHooks(std::move(sd_hooks));
 
         settings_display->SetTemperatureProvider([this]() { return PmicTemperatureText(); });
+        settings_display->SetBatteryVoltageProvider(
+            [this]() { return pmic_ != nullptr ? pmic_->GetBatteryVoltageMv() : 0; });
         settings_display->SetServerProvider([]() {
             Settings settings("wifi", false);
             std::string url = settings.GetString("ota_url", "");

@@ -187,6 +187,24 @@ yapılıp hata yutuluyor. Yeni I2C çipi eklerken bu kalıbı kopyala.
 > oldu. Bir sonraki senkronda da aynısını yap: `git fetch upstream && git merge upstream/main`.
 > Kazanılanlar: **notify** (sunucudan sesli bildirim akışı), yeniden yazılmış `OggDemuxer`
 > (2 KB tampon, paket süresi Opus TOC baytından), boşta saat düzeltmesi.
+>
+> **İkinci senkron (12 Eyl 2026), yine `merge`.** 26 commit. Tek çakışma yine kökteki
+> `CMakeLists.txt`: **kendi sürüm dizimizi koru** (upstream 2.5.0'da, biz 2.27.0'dayız; OTA
+> sunucusu dosya adını bizim numaraya göre eşliyor). Bu turda değişen üç şey:
+>
+> - **`Http` arayüzü `std::expected` döndürüyor** (esp-ml307 3.7.0). `Open()`, `GetStatusCode()`
+>   ve `Read()` artık bool/int değil. `!http->Open(...)` ve `GetStatusCode() == 200` hâlâ
+>   derleniyor (`operator bool` / `operator==`), ama `Read()`'in sonucunu `int`'e atayamazsın
+>   ve `%d` ile loglayamazsın. Doğrusu: `if (auto r = http->Open(...); !r) { r.error().ToString() }`.
+> - **C++ istisnaları ve RTTI kapatıldı** (`CONFIG_COMPILER_CXX_EXCEPTIONS=n`). `std::stoi`,
+>   `try/catch`, `dynamic_cast` **kullanma** — `std::stoi` fırlatamayınca cihazı komple
+>   durduruyor. Binary 87 KB küçüldü (3.364.672 → 3.275.248).
+> - **CI imajı `v6.1`.** IDF tabanı `>=6.0.1`, bileşenler (esp-sr 2.5.3, esp_audio_codec 2.6.2)
+>   yükseldi; upstream'le aynı imajda kal.
+>
+> Kazanılanlar: LVGL yığını PSRAM'e taşındı (aşağıdaki tuzağa bak), OTA sürüm ayrıştırması
+> artık cihazı durdurmuyor, websocket `transport` alanı null denetimi, `xpower.h` (XPowersLib
+> sarmalayıcısı), MCP'de string uzunluk doğrulaması.
 
 Yerelde ESP-IDF kurulu değil. Derleme `.github/workflows/agon-build.yml` ile yapılır.
 
@@ -200,7 +218,7 @@ Yerelde ESP-IDF kurulu değil. Derleme `.github/workflows/agon-build.yml` ile ya
 ```yaml
 name: Agon Firmware
 on: [workflow_dispatch, push → branches: pwr-button]
-container: espressif/idf:v6.0.2
+container: espressif/idf:v6.1
 run: python scripts/build.py waveshare/esp32-s3-touch-lcd-1.83 \
        --name esp32-s3-touch-lcd-1.83 --language tr-TR
 artifact: xiaozhi-1.83-turkce-pwrbutton → build/merged-binary.bin
@@ -297,6 +315,7 @@ Türkçe string değerleri: `VOLUME`="Ses ", `MUTED`="Sessiz", `MAX_VOLUME`="Mak
 | **Dokunmatik** | Upstream'de hiçbir tıklanabilir widget yok. Bu fork'ta `settings_panel_display.h` ile kullanılıyor (bkz. §3). Kaydırma olayı parmağın altındaki nesneye gider; `container_`/`emoji_box_` üzerinde `EVENT_BUBBLE` ile ekrana çıkarılıyor ve scroll'un hareketi yutmaması için o ikisinde `SCROLLABLE` kapatılıyor. |
 | **Kurucuda ağ kullanmak** | Board kurucusu (`InitializeXxx`) çalışırken **lwIP ayakta değil**. Orada soket açan bir şey çağırmak (`httpd_start`, `socket()`, DNS) `assert failed: tcpip_send_msg_wait_sem ... (Invalid mbox)` verip **açılış döngüsü** yaratıyor. Bir kez yaşandı: SD dosya sunucusu tercihi NVS'ten okunup kurucuda başlatılıyordu; kullanıcı sunucuyu açık bırakınca cihaz bir daha açılmadı. Doğrusu: zamanlayıcıyla `WifiManager::IsConnected()` bekle, sonra `Application::Schedule` ile başlat. Aynı sebeple hava durumu da açılıştan 30 sn sonra çekiliyor. |
 | **LVGL'i kilitsiz cagirmak** | Cihaz **donuyor** (yeniden baslatmiyor, ekran son kareyi tutuyor), seri portta `task_wdt: IDLE0` + `CPU 0: esp_timer` ve `lv_inv_area` icinde sonsuz dongu. Sebep: `Display` sanal metotlari (`SetStatus`, `SetChatMessage`, `SetEmotion`) LVGL gorevinden **degil** ana gorev ve `PowerSaveTimer`'in esp_timer gorevinden de cagriliyor (`OnEnterSleepMode` → `SetPowerSaveMode` → `SetChatMessage`). Override edip icinde LVGL'e dokunuyorsan **`DisplayLockGuard` sart**. Kilit ozyinelemeli (`xSemaphoreTakeRecursive`), ust sinif da kilitliyor olsa bile ic ice almak guvenli. |
+| **LVGL yığını artık PSRAM'de** | 12 Eyl 2026 senkronundan sonra `CONFIG_LV_USE_BUILTIN_MALLOC=y` ve TLSF havuzu PSRAM'de: **1 MB taban** (`LV_MEM_SIZE_KILOBYTES=1024`) + `lcd_display.cc`'nin eklediği 2560 KB. Kazanç: eskiden CLIB malloc + `SPIRAM_MALLOC_ALWAYSINTERNAL=2048` yüzünden 2 KB altındaki her LVGL ayırması **dahili SRAM**'den geliyordu; dahili RAM zaten dardı. ⚠️ **Bedeli: tek bir ayırma 1 MB'ı geçemiyor** (TLSF `block_size_max = 1 << ceil(log2(LV_MEM_SIZE))`). Galeride ~724×724'ten büyük bir JPEG çözülemez. Olursa çare board `config.json`'a `CONFIG_LV_MEM_SIZE_KILOBYTES=2048` (taban havuz 1 MB daha PSRAM yer, sınır 2 MB'a çıkar) — paylaşılan `sdkconfig.defaults.esp32s3`'e dokunma. `CONFIG_LV_CACHE_DEF_SIZE` artık 0; `SpiLcdDisplay` kurucusu açılışta `lv_image_cache_resize(2 MB)` çağırıyor, board'dan ayarlamanın anlamı yok. |
 | **`-Werror` enum** | `LV_PART_x \| LV_STATE_x` doğrudan OR'lanınca `-Werror=deprecated-enum-enum-conversion` derlemeyi durduruyor. `lv_style_selector_t`'ye cast et. Bir CI turu bu yüzden yandı. |
 | **Kapalı LVGL widget'ları** | `sdkconfig.defaults`'ta flash tasarrufu için `=n`: **tileview, tabview, keyboard, list, menu, msgbox, spinner, chart, calendar, span, spinbox, led, win, animimg**. Kullanmaya kalkarsan "was not declared in this scope" alırsın — bir CI turu tileview yüzünden yandı. Sayfalama `lv_obj` + `lv_obj_set_scroll_snap_x` + `SCROLL_ONE` ile kendimiz yapıldı. `slider`, `switch`, `button`, `buttonmatrix` **açık**. Paylaşılan sdkconfig'i değiştirmek tüm board'ları etkiler, son çare olsun. |
 | **microSD** | ✅ **Bu fork'ta çalışıyor** — 64 GB FAT32 kart cihazda doğrulandı (`59.5 GB OK`). Pinler stok `config.h`'da **yoktu**, Waveshare BSP bileşeninden alındı. `main/CMakeLists.txt`'te SDMMC bağımlılığı bu board için de eklendi. **Ama hâlâ tüketicisi yok** — sadece `/sdcard` mount ediliyor. `format_if_mount_failed=false`, asla formatlama. Upstream issue #1053 hâlâ açık. |

@@ -132,6 +132,11 @@ public:
     void SetServerProvider(std::function<std::string()> provider) {
         server_provider_ = std::move(provider);
     }
+    // mV; 0 = okunamadi. Yuzde tek basina yaniltici olabiliyor, voltaj
+    // hucrenin gercek durumunu gosteriyor.
+    void SetBatteryVoltageProvider(std::function<int()> provider) {
+        battery_mv_provider_ = std::move(provider);
+    }
     void SetRadioHooks(RadioHooks hooks) { radio_ = std::move(hooks); }
 
     // "Ekrani Kapat" kisayolu icin; board parlakligi sifirliyor.
@@ -460,6 +465,7 @@ private:
     std::function<void()> on_sleep_now_;
     std::function<std::string()> temp_provider_;
     std::function<std::string()> server_provider_;
+    std::function<int()> battery_mv_provider_;
 
     // Sayfa 4 - WiFi
     lv_obj_t* wifi_status_label_ = nullptr;
@@ -2001,8 +2007,18 @@ private:
         int level = 0;
         bool charging = false;
         bool discharging = false;
+        int battery_mv = battery_mv_provider_ ? battery_mv_provider_() : 0;
         if (Board::GetInstance().GetBatteryLevel(level, charging, discharging)) {
-            lv_label_set_text_fmt(info_battery_, "%d%s", level, charging ? "% +" : "%");
+            if (battery_mv > 0) {
+                lv_label_set_text_fmt(info_battery_, "%d%s  %d.%02d V", level,
+                                      charging ? "% +" : "%", battery_mv / 1000,
+                                      (battery_mv % 1000) / 10);
+            } else {
+                lv_label_set_text_fmt(info_battery_, "%d%s", level, charging ? "% +" : "%");
+            }
+        } else if (battery_mv > 0) {
+            lv_label_set_text_fmt(info_battery_, "%d.%02d V", battery_mv / 1000,
+                                  (battery_mv % 1000) / 10);
         } else {
             lv_label_set_text(info_battery_, "-");
         }
