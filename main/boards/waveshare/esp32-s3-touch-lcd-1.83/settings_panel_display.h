@@ -570,6 +570,9 @@ private:
         BuildGalleryTile(view_gallery_);
         view_photo_ = CreateAppView("Gorsel");
         BuildPhotoTile(view_photo_);
+        // Gorsel flex_grow ile bosluga oturuyor, tasma yok; kaydirmayi acik
+        // birakmak resmi surukleyebilir hale getiriyordu.
+        lv_obj_remove_flag(view_photo_, LV_OBJ_FLAG_SCROLLABLE);
 
         BuildKeyboard();
         info_timer_ = lv_timer_create(InfoTimerCb, kInfoRefreshMs, this);
@@ -626,8 +629,18 @@ private:
         lv_obj_set_style_pad_bottom(view, 14, 0);
         lv_obj_set_style_pad_row(view, 8, 0);
         lv_obj_set_flex_flow(view, LV_FLEX_FLOW_COLUMN);
-        lv_obj_remove_flag(view, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scrollbar_mode(view, LV_SCROLLBAR_MODE_OFF);
+        // ⚠️ Kaydirma ACIK kalmali. Bilgi sayfasi 10 satirla 284 px'i ~40 px
+        // asiyor ve son satirlar (Bos RAM, MAC, Sunucu) hic erisilemiyordu -
+        // launcher'da bire bir ayni hatayi yapmistik (bkz. BuildLauncher).
+        // LVGL yalnizca gercekten tasan gorunumu kaydirir, otekiler etkilenmez.
+        lv_obj_set_scroll_dir(view, LV_DIR_VER);
+        // Devami oldugu belli olsun: cubuk olmayinca kullanici sayfayi eksik
+        // sandi. AUTO yalnizca icerik tastiginda gosteriyor.
+        lv_obj_set_scrollbar_mode(view, LV_SCROLLBAR_MODE_AUTO);
+        lv_obj_set_style_width(view, 4, LV_PART_SCROLLBAR);
+        lv_obj_set_style_radius(view, 2, LV_PART_SCROLLBAR);
+        lv_obj_set_style_bg_color(view, lv_color_hex(0x8E8E93), LV_PART_SCROLLBAR);
+        lv_obj_set_style_bg_opa(view, LV_OPA_50, LV_PART_SCROLLBAR);
         lv_obj_add_flag(view, LV_OBJ_FLAG_EVENT_BUBBLE);
 
         lv_obj_t* header = lv_obj_create(view);
@@ -1960,6 +1973,9 @@ private:
         }
         if (active != nullptr) {
             lv_obj_remove_flag(active, LV_OBJ_FLAG_HIDDEN);
+            // Sayfa kaydirilmis halde birakilmissa geri gelince tepeden
+            // baslasin; basliktaki geri oku da boylece hep gorunur oluyor.
+            lv_obj_scroll_to_y(active, 0, LV_ANIM_OFF);
         }
 
         ResetConfirm(wifi_confirm_);

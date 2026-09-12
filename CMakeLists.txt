@@ -11,5 +11,5 @@ idf_build_set_property(MINIMAL_BUILD ON)
 
 # ⚠️ Bu forkun kendi surum dizisi. Upstream 2.5.0 kullaniyor; birlestirmede
 # ustune yazdirma - OTA sunucusu dosya adini bu numaraya gore esliyor.
-set(PROJECT_VER "2.27.0")
+set(PROJECT_VER "2.28.0")
 project(xiaozhi)
